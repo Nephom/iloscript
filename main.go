@@ -46,9 +46,27 @@ type TaskStatusData struct {
 	TaskState       string `json:"TaskState"`
 	TaskStatus      string `json:"TaskStatus"`
 	PercentComplete int    `json:"PercentComplete"`
+	ODataID         string `json:"@odata.id"`
+	TaskMonitor     string `json:"TaskMonitor"`
 	Messages        []struct {
 		Message string `json:"Message"`
 	} `json:"Messages"`
+}
+
+func canonicalTaskURI(taskURI string) string {
+	if !strings.Contains(taskURI, "/TaskMonitors/") {
+		return ""
+	}
+	return strings.Replace(taskURI, "/TaskMonitors/", "/Tasks/", 1)
+}
+
+func isTerminalTaskState(state string) bool {
+	switch strings.ToLower(state) {
+	case "complete", "completed", "failed", "exception", "killed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 const (
@@ -462,6 +480,12 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 	c.debugf("GET task URI %s -> HTTP %d; response=%s", url, resp.StatusCode, truncateDebugBody(body))
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		if strings.Contains(string(body), "iLO.2.44.UpdateBadParameter") {
+			if taskURL := canonicalTaskURI(url); taskURL != "" && taskURL != url {
+				c.debugf("TaskMonitor rejected with UpdateBadParameter; switching to canonical task URI %s", taskURL)
+				return c.GetTaskStatus(taskURL)
+			}
+		}
 		if oemData, oemErr := c.FetchOemHpeData(); oemErr == nil && (oemData.State != "" || oemData.FlashProgressPercent > 0) {
 			state := oemData.State
 			if strings.EqualFold(state, "Complete") || strings.EqualFold(state, "Completed") {
@@ -554,7 +578,7 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 
 	// 判斷 TaskState 和進度
 	updateState := taskData.TaskState
-	if oemErr == nil && oemData.State != "" {
+	if !isTerminalTaskState(updateState) && oemErr == nil && oemData.State != "" {
 		updateState = oemData.State
 	}
 	if updateState == "" {

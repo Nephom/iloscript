@@ -128,3 +128,29 @@ func TestTaskMonitor400FallsBackToUpdateServiceState(t *testing.T) {
 		t.Fatalf("unexpected fallback status: %s %d", status, progress)
 	}
 }
+
+func TestTaskMonitorUpdateBadParameterUsesCanonicalTask(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/redfish/v1/TaskService/TaskMonitors/6/":
+			http.Error(writer, `{"error":{"@Message.ExtendedInfo":[{"MessageId":"iLO.2.44.UpdateBadParameter"}]}}`, http.StatusBadRequest)
+		case "/redfish/v1/TaskService/Tasks/6/":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"@odata.id":       "/redfish/v1/TaskService/Tasks/6/",
+				"TaskState":       "Completed",
+				"PercentComplete": 100,
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	status, progress, err := testClient(server.URL).GetTaskStatus("/redfish/v1/TaskService/TaskMonitors/6/")
+	if err != nil {
+		t.Fatalf("GetTaskStatus returned error: %v", err)
+	}
+	if status != "Complete" || progress != 100 {
+		t.Fatalf("unexpected canonical task status: %s %d", status, progress)
+	}
+}
