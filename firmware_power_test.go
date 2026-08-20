@@ -154,3 +154,23 @@ func TestTaskMonitorUpdateBadParameterUsesCanonicalTask(t *testing.T) {
 		t.Fatalf("unexpected canonical task status: %s %d", status, progress)
 	}
 }
+
+func TestSetRemoteServerCertificateVerification(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPatch || request.URL.Path != "/redfish/v1/UpdateService/" {
+			http.NotFound(writer, request)
+			return
+		}
+		body, _ := io.ReadAll(request.Body)
+		if string(body) != `{"VerifyRemoteServerCertificate":false}` {
+			http.Error(writer, "unexpected payload", http.StatusBadRequest)
+			return
+		}
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := testClient(server.URL).SetRemoteServerCertificateVerification(context.Background(), false); err != nil {
+		t.Fatalf("SetRemoteServerCertificateVerification returned error: %v", err)
+	}
+}

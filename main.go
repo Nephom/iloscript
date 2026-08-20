@@ -19,15 +19,16 @@ import (
 )
 
 type ILOClient struct {
-	BaseURL    string
-	Token      string
-	Session    *http.Client
-	MaxRetries int
-	RetryDelay time.Duration
-	Username   string
-	Password   string
-	SessionURI string
-	Verbose    bool
+	BaseURL          string
+	Token            string
+	Session          *http.Client
+	MaxRetries       int
+	RetryDelay       time.Duration
+	Username         string
+	Password         string
+	SessionURI       string
+	Verbose          bool
+	InsecureImageTLS bool
 }
 
 type OemHpeData struct {
@@ -1782,9 +1783,13 @@ func (c *ILOClient) FetchSensorData() error {
 
 func main() {
 	verbose := false
+	insecureImageTLS := false
 	for _, argument := range os.Args[1:] {
 		if argument == "-v" || argument == "--verbose" {
 			verbose = true
+		}
+		if argument == "--i" {
+			insecureImageTLS = true
 		}
 	}
 	if len(os.Args) == 2 && (os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help") {
@@ -1811,6 +1816,7 @@ func main() {
 		os.Exit(1)
 	}
 	client.Verbose = verbose
+	client.InsecureImageTLS = insecureImageTLS
 
 	// 從環境變量或配置文件獲取認證信息
 	username := os.Getenv("ILO_USERNAME")
@@ -1991,14 +1997,25 @@ func main() {
 			fmt.Printf("Firmware upload failed: %v\n", updateErr)
 			os.Exit(1)
 		}
+		restoreFirmwareSettings := func() {
+			if updateInfo.RestoreRemoteServerCertificate != nil {
+				if restoreErr := client.RestoreFirmwareUpdateSettings(context.Background(), updateInfo); restoreErr != nil {
+					fmt.Printf("Warning: failed to restore remote certificate verification: %v\n", restoreErr)
+				}
+				updateInfo.RestoreRemoteServerCertificate = nil
+			}
+		}
+		defer restoreFirmwareSettings()
 		if updateInfo.TaskURI != "" {
 			if monitorErr := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateTimeout); monitorErr != nil {
 				fmt.Printf("Firmware monitoring failed: %v\n", monitorErr)
+				restoreFirmwareSettings()
 				os.Exit(1)
 			}
 		}
 		if verifyErr := client.VerifyFirmwareTarget(ctx, updateInfo); verifyErr != nil {
 			fmt.Printf("Firmware verification failed: %v\n", verifyErr)
+			restoreFirmwareSettings()
 			os.Exit(1)
 		}
 	case "-ver":
@@ -2107,19 +2124,31 @@ func main() {
 				fmt.Printf("Firmware update failed: %v\n", err)
 				os.Exit(1)
 			}
+			restoreFirmwareSettings := func() {
+				if updateInfo.RestoreRemoteServerCertificate != nil {
+					if restoreErr := client.RestoreFirmwareUpdateSettings(context.Background(), updateInfo); restoreErr != nil {
+						fmt.Printf("Warning: failed to restore remote certificate verification: %v\n", restoreErr)
+					}
+					updateInfo.RestoreRemoteServerCertificate = nil
+				}
+			}
+			defer restoreFirmwareSettings()
 
 			if updateInfo.TaskURI == "" {
 				fmt.Println("Firmware update did not return a task URI; waiting for target version verification.")
 				if waitErr := client.WaitForFirmwareTarget(ctx, updateInfo, updateTimeout); waitErr != nil {
 					fmt.Printf("Firmware verification failed: %v\n", waitErr)
+					restoreFirmwareSettings()
 					os.Exit(1)
 				}
 			} else if err := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateTimeout); err != nil {
 				fmt.Printf("Monitoring failed: %v\n", err)
+				restoreFirmwareSettings()
 				os.Exit(1)
 			}
 			if verifyErr := client.VerifyFirmwareTarget(ctx, updateInfo); verifyErr != nil {
 				fmt.Printf("Firmware verification failed: %v\n", verifyErr)
+				restoreFirmwareSettings()
 				os.Exit(1)
 			}
 

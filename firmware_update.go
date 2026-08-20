@@ -17,9 +17,11 @@ import (
 )
 
 type FirmwareCapabilities struct {
-	MultipartHTTPPushURI string
-	HTTPPushURI          string
-	SimpleUpdateTarget   string
+	MultipartHTTPPushURI          string
+	HTTPPushURI                   string
+	SimpleUpdateTarget            string
+	TransferProtocols             []string
+	VerifyRemoteServerCertificate *bool
 }
 
 type FirmwareInventoryTarget struct {
@@ -32,9 +34,10 @@ type FirmwareInventoryTarget struct {
 }
 
 type FirmwareUpdateInfo struct {
-	TaskURI       string
-	TargetURI     string
-	BeforeVersion string
+	TaskURI                        string
+	TargetURI                      string
+	BeforeVersion                  string
+	RestoreRemoteServerCertificate *bool
 }
 
 func parseFirmwareArguments(arguments []string) (string, string, string, error) {
@@ -46,7 +49,7 @@ func parseFirmwareArguments(arguments []string) (string, string, string, error) 
 	targetKind := "auto"
 	for index := 1; index < len(arguments); index++ {
 		argument := arguments[index]
-		if argument == "-v" || argument == "--verbose" {
+		if argument == "-v" || argument == "--verbose" || argument == "--i" {
 			continue
 		}
 		if argument == "--target" {
@@ -95,20 +98,49 @@ func (c *ILOClient) DiscoverFirmwareCapabilities(ctx context.Context) (FirmwareC
 	var service struct {
 		Actions struct {
 			SimpleUpdate struct {
-				Target string `json:"target"`
+				Target    string   `json:"target"`
+				Protocols []string `json:"TransferProtocol@Redfish.AllowableValues"`
 			} `json:"#UpdateService.SimpleUpdate"`
 		} `json:"Actions"`
-		HttpPushURI          string `json:"HttpPushUri"`
-		MultipartHTTPPushURI string `json:"MultipartHttpPushUri"`
+		HttpPushURI                   string `json:"HttpPushUri"`
+		MultipartHTTPPushURI          string `json:"MultipartHttpPushUri"`
+		VerifyRemoteServerCertificate *bool  `json:"VerifyRemoteServerCertificate"`
 	}
 	if err := json.Unmarshal(body, &service); err != nil {
 		return FirmwareCapabilities{}, fmt.Errorf("parse UpdateService: %w", err)
 	}
 	return FirmwareCapabilities{
-		MultipartHTTPPushURI: service.MultipartHTTPPushURI,
-		HTTPPushURI:          service.HttpPushURI,
-		SimpleUpdateTarget:   service.Actions.SimpleUpdate.Target,
+		MultipartHTTPPushURI:          service.MultipartHTTPPushURI,
+		HTTPPushURI:                   service.HttpPushURI,
+		SimpleUpdateTarget:            service.Actions.SimpleUpdate.Target,
+		TransferProtocols:             service.Actions.SimpleUpdate.Protocols,
+		VerifyRemoteServerCertificate: service.VerifyRemoteServerCertificate,
 	}, nil
+}
+
+func (c *ILOClient) SetRemoteServerCertificateVerification(ctx context.Context, enabled bool) error {
+	body, err := json.Marshal(map[string]bool{"VerifyRemoteServerCertificate": enabled})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.BaseURL+"/UpdateService/", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Auth-Token", c.Token)
+	req.Header.Set("Content-Type", "application/json")
+	c.debugf("PATCH UpdateService VerifyRemoteServerCertificate=%t", enabled)
+	resp, err := c.Session.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	responseBody, _ := io.ReadAll(resp.Body)
+	c.debugf("PATCH UpdateService -> HTTP %d; response=%s", resp.StatusCode, truncateDebugBody(responseBody))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("set VerifyRemoteServerCertificate=%t failed with HTTP %d: %s", enabled, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	return nil
 }
 
 func (c *ILOClient) UpdateFirmwareWithTarget(ctx context.Context, firmwareURL, requestedKind string) (FirmwareUpdateInfo, error) {
@@ -124,13 +156,36 @@ func (c *ILOClient) UpdateFirmwareWithTarget(ctx context.Context, firmwareURL, r
 	if capabilities.SimpleUpdateTarget == "" {
 		return FirmwareUpdateInfo{}, fmt.Errorf("iLO does not advertise UpdateService.SimpleUpdate")
 	}
+	parsedURL, err := url.Parse(firmwareURL)
+	if err != nil || !strings.EqualFold(parsedURL.Scheme, "https") {
+		return FirmwareUpdateInfo{}, fmt.Errorf("remote firmware source must use HTTPS; received %q", firmwareURL)
+	}
 	beforeVersion, err := c.FirmwareTargetVersion(ctx, target.ODataID)
 	if err != nil {
 		return FirmwareUpdateInfo{}, fmt.Errorf("read firmware target version: %w", err)
 	}
+	var restoreRemoteCertificate *bool
+	keepRemoteCertificateDisabled := false
+	if c.InsecureImageTLS {
+		if capabilities.VerifyRemoteServerCertificate == nil {
+			return FirmwareUpdateInfo{}, fmt.Errorf("iLO does not expose VerifyRemoteServerCertificate; cannot use --i safely")
+		}
+		original := *capabilities.VerifyRemoteServerCertificate
+		if original {
+			if err := c.SetRemoteServerCertificateVerification(ctx, false); err != nil {
+				return FirmwareUpdateInfo{}, err
+			}
+			restoreRemoteCertificate = &original
+			defer func() {
+				if !keepRemoteCertificateDisabled {
+					_ = c.SetRemoteServerCertificateVerification(context.Background(), original)
+				}
+			}()
+		}
+	}
 	payload := map[string]interface{}{
 		"ImageURI":         firmwareURL,
-		"TransferProtocol": "HTTP",
+		"TransferProtocol": "HTTPS",
 		"Targets":          []string{target.ODataID},
 	}
 	body, err := json.Marshal(payload)
@@ -167,7 +222,10 @@ func (c *ILOClient) UpdateFirmwareWithTarget(ctx context.Context, firmwareURL, r
 		}
 	}
 	fmt.Printf("Update initiated for %s (%s). Task URI: %s\n", target.Name, target.ODataID, taskURI)
-	return FirmwareUpdateInfo{TaskURI: taskURI, TargetURI: target.ODataID, BeforeVersion: beforeVersion}, nil
+	updateInfo := FirmwareUpdateInfo{TaskURI: taskURI, TargetURI: target.ODataID, BeforeVersion: beforeVersion}
+	updateInfo.RestoreRemoteServerCertificate = restoreRemoteCertificate
+	keepRemoteCertificateDisabled = true
+	return updateInfo, nil
 }
 
 func (c *ILOClient) VerifyFirmwareTarget(ctx context.Context, info FirmwareUpdateInfo) error {
@@ -183,6 +241,13 @@ func (c *ILOClient) VerifyFirmwareTarget(ctx context.Context, info FirmwareUpdat
 	}
 	fmt.Printf("Firmware target verified: %s -> %s\n", info.BeforeVersion, version)
 	return nil
+}
+
+func (c *ILOClient) RestoreFirmwareUpdateSettings(ctx context.Context, info FirmwareUpdateInfo) error {
+	if info.RestoreRemoteServerCertificate == nil {
+		return nil
+	}
+	return c.SetRemoteServerCertificateVerification(ctx, *info.RestoreRemoteServerCertificate)
 }
 
 func (c *ILOClient) WaitForFirmwareTarget(ctx context.Context, info FirmwareUpdateInfo, timeout time.Duration) error {
