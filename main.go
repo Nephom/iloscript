@@ -2013,8 +2013,8 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		if verifyErr := client.VerifyFirmwareTarget(ctx, updateInfo); verifyErr != nil {
-			fmt.Printf("Firmware verification failed: %v\n", verifyErr)
+		if waitErr := client.WaitForFirmwareTarget(ctx, updateInfo, updateTimeout); waitErr != nil {
+			fmt.Printf("Firmware verification failed: %v\n", waitErr)
 			restoreFirmwareSettings()
 			os.Exit(1)
 		}
@@ -2134,20 +2134,15 @@ func main() {
 			}
 			defer restoreFirmwareSettings()
 
-			if updateInfo.TaskURI == "" {
-				fmt.Println("Firmware update did not return a task URI; waiting for target version verification.")
-				if waitErr := client.WaitForFirmwareTarget(ctx, updateInfo, updateTimeout); waitErr != nil {
-					fmt.Printf("Firmware verification failed: %v\n", waitErr)
+			if updateInfo.TaskURI != "" {
+				if err := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateTimeout); err != nil {
+					fmt.Printf("Monitoring failed: %v\n", err)
 					restoreFirmwareSettings()
 					os.Exit(1)
 				}
-			} else if err := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateTimeout); err != nil {
-				fmt.Printf("Monitoring failed: %v\n", err)
-				restoreFirmwareSettings()
-				os.Exit(1)
 			}
-			if verifyErr := client.VerifyFirmwareTarget(ctx, updateInfo); verifyErr != nil {
-				fmt.Printf("Firmware verification failed: %v\n", verifyErr)
+			if waitErr := client.WaitForFirmwareTarget(ctx, updateInfo, updateTimeout); waitErr != nil {
+				fmt.Printf("Firmware verification failed: %v\n", waitErr)
 				restoreFirmwareSettings()
 				os.Exit(1)
 			}
