@@ -97,3 +97,30 @@ func TestPowerStateAndStandardResetDiscovery(t *testing.T) {
 		t.Fatalf("unexpected reset payload: %#v", receivedPayload)
 	}
 }
+
+func TestTaskMonitor400FallsBackToUpdateServiceState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/redfish/v1/TaskService/TaskMonitors/1":
+			http.Error(writer, `{"error":"task monitor temporarily unavailable"}`, http.StatusBadRequest)
+		case "/redfish/v1/UpdateService/":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"Oem": map[string]interface{}{"Hpe": map[string]interface{}{
+					"State":                "InProgress",
+					"FlashProgressPercent": 42,
+				}},
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	status, progress, err := testClient(server.URL).GetTaskStatus("/redfish/v1/TaskService/TaskMonitors/1")
+	if err != nil {
+		t.Fatalf("GetTaskStatus returned error: %v", err)
+	}
+	if status != "InProgress" || progress != 42 {
+		t.Fatalf("unexpected fallback status: %s %d", status, progress)
+	}
+}

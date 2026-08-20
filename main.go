@@ -169,6 +169,8 @@ func (c *ILOClient) Logout() {
 		return
 	}
 	req.Header.Set("X-Auth-Token", c.Token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Cache-Control", "no-cache")
 
 	resp, err := c.Session.Do(req)
 	if err != nil {
@@ -468,8 +470,18 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 
 	body, _ := ioutil.ReadAll(resp.Body)
 
-	if resp.StatusCode != 200 && resp.StatusCode != 202 {
-		return "Error", 0, fmt.Errorf("unexpected TaskService status code: %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		if oemData, oemErr := c.FetchOemHpeData(); oemErr == nil && (oemData.State != "" || oemData.FlashProgressPercent > 0) {
+			state := oemData.State
+			if strings.EqualFold(state, "Complete") || strings.EqualFold(state, "Completed") {
+				return "Complete", 100, nil
+			}
+			if strings.EqualFold(state, "Failed") || strings.EqualFold(state, "Exception") || strings.EqualFold(state, "Killed") {
+				return "Error", oemData.FlashProgressPercent, nil
+			}
+			return state, oemData.FlashProgressPercent, nil
+		}
+		return "Error", 0, fmt.Errorf("unexpected TaskService status code: %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	// 解析 /TaskService/ 返回數據
