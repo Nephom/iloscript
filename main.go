@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -41,8 +42,10 @@ type UpdateServiceResponse struct {
 
 // TaskStatusData 結構更新，添加 TaskState
 type TaskStatusData struct {
-	TaskState string `json:"TaskState"`
-	Messages  []struct {
+	TaskState       string `json:"TaskState"`
+	TaskStatus      string `json:"TaskStatus"`
+	PercentComplete int    `json:"PercentComplete"`
+	Messages        []struct {
 		Message string `json:"Message"`
 	} `json:"Messages"`
 }
@@ -314,26 +317,11 @@ func containsIgnoreCase(s, substr string) bool {
 }
 
 func (c *ILOClient) UpdateFirmware(firmwareURL string) (string, error) {
-	url := c.BaseURL + "/UpdateService/Actions/UpdateService.SimpleUpdate"
-	payload := map[string]string{"ImageURI": firmwareURL, "TransferProtocol": "HTTP"}
-	body, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	req.Header.Set("X-Auth-Token", c.Token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.Session.Do(req)
+	info, err := c.UpdateFirmwareWithTarget(context.Background(), firmwareURL, "auto")
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 202 {
-		location := resp.Header.Get("Location")
-		fmt.Printf("Update initiated! Task URI: %s\n", location)
-		return location, nil
-	}
-	return "", fmt.Errorf("update failed: %d", resp.StatusCode)
+	return info.TaskURI, nil
 }
 
 // FetchOemHpeData 從 UpdateService 獲取 Oem.Hpe 數據
@@ -573,14 +561,25 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 		updateState = "Unknown"
 	}
 
-	progress := oemData.FlashProgressPercent
-	if progress == 0 && resp.StatusCode == 202 {
-		return "InProgress", progress, nil
+	progress := 0
+	if oemErr == nil {
+		progress = oemData.FlashProgressPercent
 	}
-	if resp.StatusCode == 200 || updateState == "Complete" {
+	if taskData.PercentComplete > progress {
+		progress = taskData.PercentComplete
+	}
+	if strings.EqualFold(updateState, "Complete") || strings.EqualFold(updateState, "Completed") {
 		return "Complete", 100, nil
 	}
-
+	if strings.EqualFold(updateState, "Failed") || strings.EqualFold(updateState, "Exception") || strings.EqualFold(updateState, "Killed") || strings.EqualFold(updateState, "Cancelled") {
+		return "Error", progress, nil
+	}
+	if updateState == "" || strings.EqualFold(updateState, "Unknown") {
+		if taskData.TaskStatus != "" {
+			return taskData.TaskStatus, progress, nil
+		}
+		return "InProgress", progress, nil
+	}
 	return updateState, progress, nil
 }
 
@@ -1939,28 +1938,30 @@ func main() {
 		}
 	case "-firmware":
 		if len(os.Args) < 4 {
-			fmt.Println("Usage: <ilo_ip> -firmware <image_path> [match_text]")
+			fmt.Println("Usage: <ilo_ip> -firmware <image_path> [match_text] [--target auto|bios|ilo]")
 			os.Exit(1)
 		}
-		imagePath := os.Args[3]
-		matchText := "None"
-		if len(os.Args) >= 5 {
-			matchText = os.Args[4]
+		imagePath, matchText, targetKind, argumentErr := parseFirmwareArguments(os.Args[3:])
+		if argumentErr != nil {
+			fmt.Printf("Firmware argument error: %v\n", argumentErr)
+			os.Exit(1)
 		}
 		ctx, cancel := monitorContext()
 		defer cancel()
-		taskURI, updateErr := client.UpdateFirmwareImage(ctx, imagePath)
+		updateInfo, updateErr := client.UpdateFirmwareImageWithTarget(ctx, imagePath, targetKind)
 		if updateErr != nil {
 			fmt.Printf("Firmware upload failed: %v\n", updateErr)
 			os.Exit(1)
 		}
-		if taskURI != "" {
-			if monitorErr := client.MonitorUpdate(taskURI, matchText, updateTimeout); monitorErr != nil {
+		if updateInfo.TaskURI != "" {
+			if monitorErr := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateTimeout); monitorErr != nil {
 				fmt.Printf("Firmware monitoring failed: %v\n", monitorErr)
 				os.Exit(1)
 			}
-		} else {
-			fmt.Println("Firmware upload accepted without a task URI")
+		}
+		if verifyErr := client.VerifyFirmwareTarget(ctx, updateInfo); verifyErr != nil {
+			fmt.Printf("Firmware verification failed: %v\n", verifyErr)
+			os.Exit(1)
 		}
 	case "-ver":
 		if err := client.FetchFirmwareInventory(); err != nil {
@@ -2050,25 +2051,37 @@ func main() {
 			// 验证 firmwareURL 是否为有效的 URL
 			if !isValidURL(firmwareURL) {
 				fmt.Println("Error: The provided firmware URL is not valid.")
-				fmt.Println("Usage: <ilo_ip> <firmware_url> [match_text]")
+				fmt.Println("Usage: <ilo_ip> <firmware_url> [match_text] [--target auto|bios|ilo]")
 				fmt.Println("[match_text] can be ignored.")
 				os.Exit(1)
 			}
 
-			matchText := "None" // 預設值為 "None"
-
-			if len(os.Args) == 4 {
-				matchText = os.Args[3]
+			firmwareURL, matchText, targetKind, argumentErr := parseFirmwareArguments(os.Args[2:])
+			if argumentErr != nil {
+				fmt.Printf("Firmware argument error: %v\n", argumentErr)
+				os.Exit(1)
 			}
 
-			taskURI, err := client.UpdateFirmware(firmwareURL)
+			ctx, cancel := monitorContext()
+			defer cancel()
+			updateInfo, err := client.UpdateFirmwareWithTarget(ctx, firmwareURL, targetKind)
 			if err != nil {
 				fmt.Printf("Firmware update failed: %v\n", err)
 				os.Exit(1)
 			}
 
-			if err := client.MonitorUpdate(taskURI, matchText, updateTimeout); err != nil {
+			if updateInfo.TaskURI == "" {
+				fmt.Println("Firmware update did not return a task URI; waiting for target version verification.")
+				if waitErr := client.WaitForFirmwareTarget(ctx, updateInfo, updateTimeout); waitErr != nil {
+					fmt.Printf("Firmware verification failed: %v\n", waitErr)
+					os.Exit(1)
+				}
+			} else if err := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateTimeout); err != nil {
 				fmt.Printf("Monitoring failed: %v\n", err)
+				os.Exit(1)
+			}
+			if verifyErr := client.VerifyFirmwareTarget(ctx, updateInfo); verifyErr != nil {
+				fmt.Printf("Firmware verification failed: %v\n", verifyErr)
 				os.Exit(1)
 			}
 

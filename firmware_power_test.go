@@ -23,6 +23,10 @@ func testClient(serverURL string) *ILOClient {
 func TestUpdateFirmwareImageMultipart(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case "/redfish/v1/UpdateService/FirmwareInventory/":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"Members": []map[string]string{{"@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/7"}}})
+		case "/redfish/v1/UpdateService/FirmwareInventory/7":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/7", "Name": "System ROM", "Version": "old", "Updateable": true})
 		case "/redfish/v1/UpdateService/":
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = writer.Write([]byte(`{"MultipartHttpPushUri":"/redfish/v1/UpdateService/MultipartHttpPush","Actions":{"#UpdateService.SimpleUpdate":{"target":"/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate"}}}`))
@@ -35,7 +39,7 @@ func TestUpdateFirmwareImageMultipart(t *testing.T) {
 				http.Error(writer, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if request.MultipartForm.Value["UpdateParameters"][0] == "" || len(request.MultipartForm.File["UpdateFile"]) != 1 {
+			if !strings.Contains(request.MultipartForm.Value["UpdateParameters"][0], "/FirmwareInventory/7") || len(request.MultipartForm.File["UpdateFile"]) != 1 {
 				http.Error(writer, "missing multipart fields", http.StatusBadRequest)
 				return
 			}
@@ -52,12 +56,12 @@ func TestUpdateFirmwareImageMultipart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	taskURI, err := testClient(server.URL).UpdateFirmwareImage(context.Background(), imagePath)
+	taskInfo, err := testClient(server.URL).UpdateFirmwareImageWithTarget(context.Background(), imagePath, "bios")
 	if err != nil {
 		t.Fatalf("UpdateFirmwareImage returned error: %v", err)
 	}
-	if taskURI != "/redfish/v1/TaskService/Tasks/1" {
-		t.Fatalf("unexpected task URI: %q", taskURI)
+	if taskInfo.TaskURI != "/redfish/v1/TaskService/Tasks/1" || taskInfo.TargetURI != "/redfish/v1/UpdateService/FirmwareInventory/7" {
+		t.Fatalf("unexpected update info: %#v", taskInfo)
 	}
 }
 
