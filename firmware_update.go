@@ -36,6 +36,7 @@ type FirmwareInventoryTarget struct {
 type FirmwareUpdateInfo struct {
 	TaskURI                        string
 	TargetURI                      string
+	TargetKind                     string
 	BeforeVersion                  string
 	RestoreRemoteServerCertificate *bool
 }
@@ -223,6 +224,7 @@ func (c *ILOClient) UpdateFirmwareWithTarget(ctx context.Context, firmwareURL, r
 	}
 	fmt.Printf("Update initiated for %s (%s). Task URI: %s\n", target.Name, target.ODataID, taskURI)
 	updateInfo := FirmwareUpdateInfo{TaskURI: taskURI, TargetURI: target.ODataID, BeforeVersion: beforeVersion}
+	updateInfo.TargetKind = resolvedFirmwareTargetKind(firmwareURL, requestedKind)
 	updateInfo.RestoreRemoteServerCertificate = restoreRemoteCertificate
 	keepRemoteCertificateDisabled = true
 	return updateInfo, nil
@@ -272,6 +274,36 @@ func (c *ILOClient) WaitForFirmwareTarget(ctx context.Context, info FirmwareUpda
 	}
 }
 
+func (c *ILOClient) MonitorUpdateService(ctx context.Context, timeout int) error {
+	start := time.Now()
+	fmt.Println("\n開始監控 UpdateService firmware progress...")
+	for time.Since(start) < time.Duration(timeout)*time.Second {
+		data, err := c.FetchOemHpeData()
+		if err != nil {
+			return fmt.Errorf("failed to fetch UpdateService progress: %w", err)
+		}
+		state := data.State
+		progress := data.FlashProgressPercent
+		if state == "" {
+			state = "Unknown"
+		}
+		fmt.Printf("\r進度: %d%%, 更新狀態: %s        ", progress, state)
+		c.debugf("UpdateService progress state=%s percent=%d", state, progress)
+		if strings.EqualFold(state, "Complete") || strings.EqualFold(state, "Completed") {
+			fmt.Println("\n更新完成!")
+			return nil
+		}
+		if strings.EqualFold(state, "Failed") || strings.EqualFold(state, "Exception") || strings.EqualFold(state, "Killed") || strings.EqualFold(state, "Cancelled") {
+			fmt.Println("\n更新失敗!")
+			return fmt.Errorf("firmware update failed with UpdateService state %s", state)
+		}
+		if err := sleepWithContext(ctx, monitorInterval); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("firmware update monitoring timeout")
+}
+
 func (c *ILOClient) DiscoverFirmwareTargets(ctx context.Context) ([]FirmwareInventoryTarget, error) {
 	body, _, err := c.getJSON(ctx, c.BaseURL+"/UpdateService/FirmwareInventory/")
 	if err != nil {
@@ -319,6 +351,14 @@ func inferFirmwareTarget(source string) string {
 		return "ilo"
 	}
 	return ""
+}
+
+func resolvedFirmwareTargetKind(source, requestedKind string) string {
+	kind := strings.ToLower(strings.TrimSpace(requestedKind))
+	if kind == "" || kind == "auto" {
+		return inferFirmwareTarget(source)
+	}
+	return kind
 }
 
 func isHPESystemROMName(name string) bool {
@@ -488,11 +528,11 @@ func (c *ILOClient) UpdateFirmwareImageWithTarget(ctx context.Context, imagePath
 	}
 	if capabilities.MultipartHTTPPushURI != "" {
 		taskURI, uploadErr := c.UploadFirmwareMultipartWithTarget(ctx, imagePath, capabilities.MultipartHTTPPushURI, target.ODataID)
-		return FirmwareUpdateInfo{TaskURI: taskURI, TargetURI: target.ODataID, BeforeVersion: beforeVersion}, uploadErr
+		return FirmwareUpdateInfo{TaskURI: taskURI, TargetURI: target.ODataID, TargetKind: resolvedFirmwareTargetKind(imagePath, requestedKind), BeforeVersion: beforeVersion}, uploadErr
 	}
 	if capabilities.HTTPPushURI != "" {
 		taskURI, uploadErr := c.UploadFirmwareMultipartWithTarget(ctx, imagePath, capabilities.HTTPPushURI, target.ODataID)
-		return FirmwareUpdateInfo{TaskURI: taskURI, TargetURI: target.ODataID, BeforeVersion: beforeVersion}, uploadErr
+		return FirmwareUpdateInfo{TaskURI: taskURI, TargetURI: target.ODataID, TargetKind: resolvedFirmwareTargetKind(imagePath, requestedKind), BeforeVersion: beforeVersion}, uploadErr
 	}
 	return FirmwareUpdateInfo{}, fmt.Errorf("iLO does not advertise a local firmware upload endpoint; use a remote firmware URL")
 }

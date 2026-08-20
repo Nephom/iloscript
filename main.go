@@ -840,7 +840,7 @@ func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter s
 	return nil
 }
 
-func (c *ILOClient) MonitorUpdate(taskURI, matchText string, timeout int) error {
+func (c *ILOClient) MonitorUpdate(taskURI, matchText, targetKind string, timeout int) error {
 	start := time.Now()
 
 	fmt.Println("\n開始監控更新進度...")
@@ -859,8 +859,10 @@ func (c *ILOClient) MonitorUpdate(taskURI, matchText string, timeout int) error 
 
 			if consecutiveErrors >= maxConsecutiveErrors {
 				fmt.Println("\n連續多次獲取狀態失敗，嘗試獲取 IML 事件...")
-				if fetchErr := c.FetchIMLEvents(10, matchText, ""); fetchErr != nil {
-					fmt.Printf("獲取 IML 事件失敗: %v\n", fetchErr)
+				if !strings.EqualFold(targetKind, "ilo") {
+					if fetchErr := c.FetchIMLEvents(10, matchText, ""); fetchErr != nil {
+						fmt.Printf("獲取 IML 事件失敗: %v\n", fetchErr)
+					}
 				}
 				return fmt.Errorf("monitoring failed: %v", err)
 			}
@@ -875,14 +877,18 @@ func (c *ILOClient) MonitorUpdate(taskURI, matchText string, timeout int) error 
 		switch status {
 		case "Complete":
 			fmt.Println("\n更新完成!")
-			if fetchErr := c.FetchIMLEvents(10, filter, ""); fetchErr != nil {
-				fmt.Printf("獲取 IML 事件失敗: %v\n", fetchErr)
+			if !strings.EqualFold(targetKind, "ilo") {
+				if fetchErr := c.FetchIMLEvents(10, filter, ""); fetchErr != nil {
+					fmt.Printf("獲取 IML 事件失敗: %v\n", fetchErr)
+				}
 			}
 			return nil
 		case "Error":
 			fmt.Println("\n更新失敗!")
-			if fetchErr := c.FetchIMLEvents(10, filter, ""); fetchErr != nil {
-				fmt.Printf("獲取 IML 事件失敗: %v\n", fetchErr)
+			if !strings.EqualFold(targetKind, "ilo") {
+				if fetchErr := c.FetchIMLEvents(10, filter, ""); fetchErr != nil {
+					fmt.Printf("獲取 IML 事件失敗: %v\n", fetchErr)
+				}
 			}
 			return fmt.Errorf("firmware update failed")
 		}
@@ -891,8 +897,10 @@ func (c *ILOClient) MonitorUpdate(taskURI, matchText string, timeout int) error 
 	}
 
 	fmt.Println("\n更新超時!")
-	if fetchErr := c.FetchIMLEvents(10, matchText, ""); fetchErr != nil {
-		fmt.Printf("獲取 IML 事件失敗: %v\n", fetchErr)
+	if !strings.EqualFold(targetKind, "ilo") {
+		if fetchErr := c.FetchIMLEvents(10, matchText, ""); fetchErr != nil {
+			fmt.Printf("獲取 IML 事件失敗: %v\n", fetchErr)
+		}
 	}
 	return fmt.Errorf("firmware update timeout")
 }
@@ -2007,14 +2015,13 @@ func main() {
 		}
 		defer restoreFirmwareSettings()
 		if updateInfo.TaskURI != "" {
-			if monitorErr := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateTimeout); monitorErr != nil {
+			if monitorErr := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateInfo.TargetKind, updateTimeout); monitorErr != nil {
 				fmt.Printf("Firmware monitoring failed: %v\n", monitorErr)
 				restoreFirmwareSettings()
 				os.Exit(1)
 			}
-		}
-		if waitErr := client.WaitForFirmwareTarget(ctx, updateInfo, updateTimeout); waitErr != nil {
-			fmt.Printf("Firmware verification failed: %v\n", waitErr)
+		} else if monitorErr := client.MonitorUpdateService(ctx, updateTimeout); monitorErr != nil {
+			fmt.Printf("Firmware monitoring failed: %v\n", monitorErr)
 			restoreFirmwareSettings()
 			os.Exit(1)
 		}
@@ -2135,7 +2142,7 @@ func main() {
 			defer restoreFirmwareSettings()
 
 			if updateInfo.TaskURI != "" {
-				if err := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateTimeout); err != nil {
+				if err := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateInfo.TargetKind, updateTimeout); err != nil {
 					fmt.Printf("Monitoring failed: %v\n", err)
 					restoreFirmwareSettings()
 					os.Exit(1)

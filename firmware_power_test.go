@@ -174,3 +174,23 @@ func TestSetRemoteServerCertificateVerification(t *testing.T) {
 		t.Fatalf("SetRemoteServerCertificateVerification returned error: %v", err)
 	}
 }
+
+func TestMonitorUpdateServiceCompletesWithoutTaskURI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/redfish/v1/UpdateService/" {
+			http.NotFound(writer, request)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"Oem": map[string]interface{}{"Hpe": map[string]interface{}{
+				"State":                "Complete",
+				"FlashProgressPercent": 100,
+			}},
+		})
+	}))
+	defer server.Close()
+
+	if err := testClient(server.URL).MonitorUpdateService(context.Background(), 1); err != nil {
+		t.Fatalf("MonitorUpdateService returned error: %v", err)
+	}
+}
