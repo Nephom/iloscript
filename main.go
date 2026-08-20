@@ -27,6 +27,7 @@ type ILOClient struct {
 	Username   string
 	Password   string
 	SessionURI string
+	Verbose    bool
 }
 
 type OemHpeData struct {
@@ -174,6 +175,7 @@ func (c *ILOClient) Logout() {
 	req.Header.Set("X-Auth-Token", c.Token)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Cache-Control", "no-cache")
+	c.debugf("GET task URI %s", url)
 
 	resp, err := c.Session.Do(req)
 	if err != nil {
@@ -457,6 +459,7 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 	defer resp.Body.Close()
 
 	body, _ := ioutil.ReadAll(resp.Body)
+	c.debugf("GET task URI %s -> HTTP %d; response=%s", url, resp.StatusCode, truncateDebugBody(body))
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		if oemData, oemErr := c.FetchOemHpeData(); oemErr == nil && (oemData.State != "" || oemData.FlashProgressPercent > 0) {
@@ -1754,11 +1757,21 @@ func (c *ILOClient) FetchSensorData() error {
 }
 
 func main() {
+	verbose := false
+	for _, argument := range os.Args[1:] {
+		if argument == "-v" || argument == "--verbose" {
+			verbose = true
+		}
+	}
 	if len(os.Args) == 2 && (os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help") {
 		printHelp()
 		return
 	}
 	if len(os.Args) < 3 {
+		printHelp()
+		return
+	}
+	if len(os.Args) == 3 && verbose {
 		printHelp()
 		return
 	}
@@ -1773,6 +1786,7 @@ func main() {
 		fmt.Printf("Failed to create client: %v\n", err)
 		os.Exit(1)
 	}
+	client.Verbose = verbose
 
 	// 從環境變量或配置文件獲取認證信息
 	username := os.Getenv("ILO_USERNAME")

@@ -15,6 +15,20 @@ import (
 
 const monitorInterval = 5 * time.Second
 
+func (c *ILOClient) debugf(format string, arguments ...interface{}) {
+	if c.Verbose {
+		fmt.Fprintf(os.Stderr, "[verbose] "+format+"\n", arguments...)
+	}
+}
+
+func truncateDebugBody(body []byte) string {
+	const maxDebugBody = 4096
+	if len(body) > maxDebugBody {
+		return string(body[:maxDebugBody]) + "... [truncated]"
+	}
+	return string(body)
+}
+
 func (c *ILOClient) Reconnect() error {
 	if c.Username == "" || c.Password == "" {
 		return errors.New("cannot reconnect without stored credentials")
@@ -80,6 +94,7 @@ func (c *ILOClient) getJSON(ctx context.Context, requestURL string) ([]byte, int
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
+	c.debugf("GET %s -> HTTP %d; response=%s", requestURL, resp.StatusCode, truncateDebugBody(body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return body, resp.StatusCode, fmt.Errorf("request returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}

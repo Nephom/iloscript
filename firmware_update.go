@@ -46,6 +46,9 @@ func parseFirmwareArguments(arguments []string) (string, string, string, error) 
 	targetKind := "auto"
 	for index := 1; index < len(arguments); index++ {
 		argument := arguments[index]
+		if argument == "-v" || argument == "--verbose" {
+			continue
+		}
 		if argument == "--target" {
 			if index+1 >= len(arguments) {
 				return "", "", "", fmt.Errorf("--target requires bios or ilo")
@@ -113,6 +116,7 @@ func (c *ILOClient) UpdateFirmwareWithTarget(ctx context.Context, firmwareURL, r
 	if err != nil {
 		return FirmwareUpdateInfo{}, err
 	}
+	c.debugf("firmware target selected: kind=%s name=%q uri=%s version=%q", requestedKind, target.Name, target.ODataID, target.Version)
 	capabilities, err := c.DiscoverFirmwareCapabilities(ctx)
 	if err != nil {
 		return FirmwareUpdateInfo{}, err
@@ -139,12 +143,14 @@ func (c *ILOClient) UpdateFirmwareWithTarget(ctx context.Context, firmwareURL, r
 	}
 	req.Header.Set("X-Auth-Token", c.Token)
 	req.Header.Set("Content-Type", "application/json")
+	c.debugf("POST SimpleUpdate url=%s image=%s target=%s payload=%s", req.URL.String(), firmwareURL, target.ODataID, string(body))
 	resp, err := c.Session.Do(req)
 	if err != nil {
 		return FirmwareUpdateInfo{}, err
 	}
 	defer resp.Body.Close()
 	responseBody, _ := io.ReadAll(resp.Body)
+	c.debugf("POST SimpleUpdate -> HTTP %d Location=%q Content-Location=%q response=%s", resp.StatusCode, resp.Header.Get("Location"), resp.Header.Get("Content-Location"), truncateDebugBody(responseBody))
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return FirmwareUpdateInfo{}, fmt.Errorf("firmware update failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
 	}
@@ -363,12 +369,14 @@ func (c *ILOClient) UploadFirmwareMultipartWithTarget(ctx context.Context, image
 	}
 	req.Header.Set("X-Auth-Token", c.Token)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c.debugf("POST multipart firmware url=%s image=%s target=%s content-length=%d", req.URL.String(), imagePath, targetURI, payload.Len())
 	resp, err := c.Session.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	responseBody, _ := io.ReadAll(resp.Body)
+	c.debugf("POST multipart firmware -> HTTP %d Location=%q Content-Location=%q response=%s", resp.StatusCode, resp.Header.Get("Location"), resp.Header.Get("Content-Location"), truncateDebugBody(responseBody))
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusCreated {
 		return "", fmt.Errorf("multipart firmware update failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
 	}
