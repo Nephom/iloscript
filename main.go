@@ -1621,8 +1621,17 @@ func (c *ILOClient) ClearLogsAndReset() error {
 	}
 
 	// Function to perform POST requests
-	postRequest := func(url string) error {
-		req, err := http.NewRequest("POST", url, nil)
+	postRequest := func(url string, payload interface{}) error {
+		var requestBody io.Reader
+		if payload != nil {
+			body, err := json.Marshal(payload)
+			if err != nil {
+				return fmt.Errorf("failed to marshal request payload for %s: %v", url, err)
+			}
+			requestBody = bytes.NewReader(body)
+		}
+
+		req, err := http.NewRequest("POST", url, requestBody)
 		if err != nil {
 			return fmt.Errorf("failed to create request for %s: %v", url, err)
 		}
@@ -1638,21 +1647,9 @@ func (c *ILOClient) ClearLogsAndReset() error {
 		}
 		defer resp.Body.Close()
 
-		body, _ := ioutil.ReadAll(resp.Body)
-		var responseData map[string]interface{}
-		if err := json.Unmarshal(body, &responseData); err != nil {
-			return fmt.Errorf("failed to parse response from %s: %v", url, err)
-		}
-
-		if errorData, exists := responseData["error"].(map[string]interface{}); exists {
-			if extendedInfo, ok := errorData["@Message.ExtendedInfo"].([]interface{}); ok && len(extendedInfo) > 0 {
-				if msgInfo, valid := extendedInfo[0].(map[string]interface{}); valid {
-					if msgID, found := msgInfo["MessageId"].(string); found {
-						fmt.Printf("MessageId: %s\n", msgID)
-						return nil // Treat all responses as success
-					}
-				}
-			}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
+			body, _ := ioutil.ReadAll(resp.Body)
+			return fmt.Errorf("request to %s failed with status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
 		}
 
 		fmt.Printf("Request to %s completed.\n", url)
@@ -1661,7 +1658,7 @@ func (c *ILOClient) ClearLogsAndReset() error {
 
 	// Clear logs by posting to each URL
 	for _, url := range urls {
-		if err := postRequest(url); err != nil {
+		if err := postRequest(url, nil); err != nil {
 			return err
 		}
 	}
@@ -1671,14 +1668,14 @@ func (c *ILOClient) ClearLogsAndReset() error {
 	time.Sleep(120 * time.Second)
 
 	// Perform iLO Reset
-	if err := postRequest(resetURL); err != nil {
+	if err := postRequest(resetURL, map[string]string{"ResetType": "ForceRestart"}); err != nil {
 		return err
 	}
 
 	// Wait for 60 seconds before iLO Reset
 	fmt.Println("Wait for 120 seconds to launch iLO...")
 
-	fmt.Println("Logs cleared and iLO reset successfully.")
+	fmt.Println("Logs cleared and iLO reset request accepted successfully.")
 	return nil
 }
 
