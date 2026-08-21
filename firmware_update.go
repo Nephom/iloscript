@@ -299,7 +299,7 @@ func (c *ILOClient) MonitorUpdateService(ctx context.Context, timeout int) error
 			fmt.Println("\n更新完成!")
 			return nil
 		}
-		if strings.EqualFold(state, "Failed") || strings.EqualFold(state, "Exception") || strings.EqualFold(state, "Killed") || strings.EqualFold(state, "Cancelled") {
+		if strings.EqualFold(state, "Failed") || strings.EqualFold(state, "Rejected") || strings.EqualFold(state, "Exception") || strings.EqualFold(state, "Killed") || strings.EqualFold(state, "Cancelled") {
 			fmt.Println("\n更新失敗!")
 			return fmt.Errorf("firmware update failed with UpdateService state %s", state)
 		}
