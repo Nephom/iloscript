@@ -9,22 +9,22 @@ import (
 	"strings"
 )
 
+type redfishPowerAction struct {
+	Target     string   `json:"target"`
+	ResetTypes []string `json:"ResetType@Redfish.AllowableValues"`
+	PushTypes  []string `json:"PushType@Redfish.AllowableValues"`
+}
+
 type computerSystemActions struct {
-	Reset struct {
-		Target     string   `json:"target"`
-		ResetTypes []string `json:"ResetType@Redfish.AllowableValues"`
-	} `json:"#ComputerSystem.Reset"`
-	Oem struct {
+	Reset redfishPowerAction `json:"#ComputerSystem.Reset"`
+	Oem   struct {
+		PowerButton redfishPowerAction `json:"#HpeComputerSystemExt.PowerButton"`
+		SystemReset redfishPowerAction `json:"#HpeComputerSystemExt.SystemReset"`
+		// Some older iLO versions wrap the OEM actions in Oem.Hpe.Actions.
 		HPE struct {
 			Actions struct {
-				SystemReset struct {
-					Target     string   `json:"target"`
-					ResetTypes []string `json:"ResetType@Redfish.AllowableValues"`
-				} `json:"#HpeComputerSystemExt.SystemReset"`
-				PowerButton struct {
-					Target    string   `json:"target"`
-					PushTypes []string `json:"PushType@Redfish.AllowableValues"`
-				} `json:"#HpeComputerSystemExt.PowerButton"`
+				PowerButton redfishPowerAction `json:"#HpeComputerSystemExt.PowerButton"`
+				SystemReset redfishPowerAction `json:"#HpeComputerSystemExt.SystemReset"`
 			} `json:"Actions"`
 		} `json:"Hpe"`
 	} `json:"Oem"`
@@ -54,6 +54,38 @@ func containsValue(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func firstAdvertised(values []string, candidates ...string) string {
+	for _, candidate := range candidates {
+		if containsValue(values, candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func (actions computerSystemActions) powerButton() redfishPowerAction {
+	if actions.Oem.PowerButton.Target != "" {
+		return actions.Oem.PowerButton
+	}
+	return actions.Oem.HPE.Actions.PowerButton
+}
+
+func (actions computerSystemActions) systemReset() redfishPowerAction {
+	if actions.Oem.SystemReset.Target != "" {
+		return actions.Oem.SystemReset
+	}
+	return actions.Oem.HPE.Actions.SystemReset
+}
+
+func describePowerActions(actions computerSystemActions) string {
+	powerButton := actions.powerButton()
+	systemReset := actions.systemReset()
+	return fmt.Sprintf("standard reset target=%q types=%v; HPE power button target=%q types=%v; HPE system reset target=%q types=%v",
+		actions.Reset.Target, actions.Reset.ResetTypes,
+		powerButton.Target, powerButton.PushTypes,
+		systemReset.Target, systemReset.ResetTypes)
 }
 
 func (c *ILOClient) fetchComputerSystemActions(ctx context.Context) (computerSystemActions, error) {
@@ -102,32 +134,52 @@ func (c *ILOClient) PowerControlDetected(ctx context.Context, action string) err
 
 	var target string
 	var payload interface{}
+	powerButton := actions.powerButton()
+	systemReset := actions.systemReset()
 	switch strings.ToLower(action) {
 	case "on", "off":
-		if actions.Reset.Target != "" && containsValue(actions.Reset.ResetTypes, strings.Title(strings.ToLower(action))) {
-			target = actions.Reset.Target
-			payload = map[string]string{"ResetType": strings.Title(strings.ToLower(action))}
-		} else if actions.Oem.HPE.Actions.PowerButton.Target != "" {
-			target = actions.Oem.HPE.Actions.PowerButton.Target
-			pushType := "Press"
-			if action == "off" {
-				pushType = "PressAndHold"
+		if strings.EqualFold(action, "on") {
+			if resetType := firstAdvertised(actions.Reset.ResetTypes, "On"); actions.Reset.Target != "" && resetType != "" {
+				target = actions.Reset.Target
+				payload = map[string]string{"ResetType": resetType}
+			} else if powerButton.Target != "" {
+				pushType := firstAdvertised(powerButton.PushTypes, "Press")
+				if pushType == "" && len(powerButton.PushTypes) == 0 {
+					pushType = "Press"
+				}
+				if pushType != "" {
+					target = powerButton.Target
+					payload = map[string]string{"PushType": pushType}
+				}
 			}
-			payload = map[string]string{"PushType": pushType}
+		} else {
+			if resetType := firstAdvertised(actions.Reset.ResetTypes, "ForceOff", "GracefulShutdown", "PushPowerButton", "Off"); actions.Reset.Target != "" && resetType != "" {
+				target = actions.Reset.Target
+				payload = map[string]string{"ResetType": resetType}
+			} else if powerButton.Target != "" {
+				pushType := firstAdvertised(powerButton.PushTypes, "PressAndHold")
+				if pushType == "" && len(powerButton.PushTypes) == 0 {
+					pushType = "PressAndHold"
+				}
+				if pushType != "" {
+					target = powerButton.Target
+					payload = map[string]string{"PushType": pushType}
+				}
+			}
 		}
 	case "reset":
 		if actions.Reset.Target != "" && containsValue(actions.Reset.ResetTypes, "ForceRestart") {
 			target = actions.Reset.Target
 			payload = map[string]string{"ResetType": "ForceRestart"}
-		} else if actions.Oem.HPE.Actions.SystemReset.Target != "" && containsValue(actions.Oem.HPE.Actions.SystemReset.ResetTypes, "ColdBoot") {
-			target = actions.Oem.HPE.Actions.SystemReset.Target
+		} else if systemReset.Target != "" && containsValue(systemReset.ResetTypes, "ColdBoot") {
+			target = systemReset.Target
 			payload = map[string]string{"ResetType": "ColdBoot"}
 		}
 	default:
 		return fmt.Errorf("invalid power action %q; use on, off, reset, status, or monitor", action)
 	}
 	if target == "" {
-		return fmt.Errorf("iLO does not advertise a compatible %s power action", action)
+		return fmt.Errorf("iLO does not advertise a compatible %s power action (%s)", action, describePowerActions(actions))
 	}
 	if err := c.postPowerAction(ctx, target, payload); err != nil {
 		return err

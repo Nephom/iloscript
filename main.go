@@ -1838,7 +1838,11 @@ func main() {
 		fmt.Printf("Login failed: %v\n", err)
 		os.Exit(1)
 	}
-	defer client.Logout()
+	defer func() {
+		if client.Token != "" {
+			client.Logout()
+		}
+	}()
 
 	switch os.Args[2] {
 	case "-model":
@@ -1985,6 +1989,7 @@ func main() {
 		default:
 			if powerErr := client.PowerControlDetected(ctx, powerAction); powerErr != nil {
 				fmt.Printf("Power control failed: %v\n", powerErr)
+				client.Logout()
 				os.Exit(1)
 			}
 		}
