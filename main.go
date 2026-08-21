@@ -1990,7 +1990,7 @@ func main() {
 		}
 	case "-firmware":
 		if len(os.Args) < 4 {
-			fmt.Println("Usage: <ilo_ip> -firmware <image_path> [match_text] [--target auto|bios|ilo]")
+			fmt.Println("Usage: <ilo_ip> -firmware <image_path> [match_text] [--target auto|bios|ilo|manual]")
 			os.Exit(1)
 		}
 		imagePath, matchText, targetKind, argumentErr := parseFirmwareArguments(os.Args[3:])
@@ -2113,7 +2113,7 @@ func main() {
 			// 验证 firmwareURL 是否为有效的 URL
 			if !isValidURL(firmwareURL) {
 				fmt.Println("Error: The provided firmware URL is not valid.")
-				fmt.Println("Usage: <ilo_ip> <firmware_url> [match_text] [--target auto|bios|ilo]")
+				fmt.Println("Usage: <ilo_ip> <firmware_url> [match_text] [--target auto|bios|ilo|manual]")
 				fmt.Println("[match_text] can be ignored.")
 				os.Exit(1)
 			}

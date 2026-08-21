@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,8 +12,8 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
-	"path"
 	"strings"
+	"text/tabwriter"
 	"time"
 )
 
@@ -47,7 +48,7 @@ func parseFirmwareArguments(arguments []string) (string, string, string, error) 
 	}
 	source := arguments[0]
 	matchText := "None"
-	targetKind := "auto"
+	targetKind := "bios"
 	for index := 1; index < len(arguments); index++ {
 		argument := arguments[index]
 		if argument == "-v" || argument == "--verbose" || argument == "--i" {
@@ -55,7 +56,7 @@ func parseFirmwareArguments(arguments []string) (string, string, string, error) 
 		}
 		if argument == "--target" {
 			if index+1 >= len(arguments) {
-				return "", "", "", fmt.Errorf("--target requires bios or ilo")
+				return "", "", "", fmt.Errorf("--target requires auto, bios, ilo, or manual")
 			}
 			targetKind = strings.ToLower(arguments[index+1])
 			index++
@@ -71,8 +72,8 @@ func parseFirmwareArguments(arguments []string) (string, string, string, error) 
 		}
 		return "", "", "", fmt.Errorf("unexpected firmware argument %q", argument)
 	}
-	if targetKind != "auto" && targetKind != "bios" && targetKind != "ilo" {
-		return "", "", "", fmt.Errorf("invalid firmware target %q; use auto, bios, or ilo", targetKind)
+	if targetKind != "auto" && targetKind != "bios" && targetKind != "ilo" && targetKind != "manual" {
+		return "", "", "", fmt.Errorf("invalid firmware target %q; use auto, bios, ilo, or manual", targetKind)
 	}
 	return source, matchText, targetKind, nil
 }
@@ -161,9 +162,12 @@ func (c *ILOClient) UpdateFirmwareWithTarget(ctx context.Context, firmwareURL, r
 	if err != nil || !strings.EqualFold(parsedURL.Scheme, "https") {
 		return FirmwareUpdateInfo{}, fmt.Errorf("remote firmware source must use HTTPS; received %q", firmwareURL)
 	}
-	beforeVersion, err := c.FirmwareTargetVersion(ctx, target.ODataID)
-	if err != nil {
-		return FirmwareUpdateInfo{}, fmt.Errorf("read firmware target version: %w", err)
+	var beforeVersion string
+	if target.ODataID != "" {
+		beforeVersion, err = c.FirmwareTargetVersion(ctx, target.ODataID)
+		if err != nil {
+			return FirmwareUpdateInfo{}, fmt.Errorf("read firmware target version: %w", err)
+		}
 	}
 	var restoreRemoteCertificate *bool
 	keepRemoteCertificateDisabled := false
@@ -187,7 +191,9 @@ func (c *ILOClient) UpdateFirmwareWithTarget(ctx context.Context, firmwareURL, r
 	payload := map[string]interface{}{
 		"ImageURI":         firmwareURL,
 		"TransferProtocol": "HTTPS",
-		"Targets":          []string{target.ODataID},
+	}
+	if target.ODataID != "" {
+		payload["Targets"] = []string{target.ODataID}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -338,34 +344,12 @@ func (c *ILOClient) DiscoverFirmwareTargets(ctx context.Context) ([]FirmwareInve
 	return targets, nil
 }
 
-func inferFirmwareTarget(source string) string {
-	parsed, err := url.Parse(source)
-	if err != nil {
-		return ""
-	}
-	name := strings.ToLower(path.Base(parsed.Path))
-	if strings.Contains(name, "bios") || strings.Contains(name, "systemrom") || strings.Contains(name, "system-rom") || isHPESystemROMName(name) {
-		return "bios"
-	}
-	if strings.Contains(name, "ilo") || strings.Contains(name, "bmc") {
-		return "ilo"
-	}
-	return ""
-}
-
 func resolvedFirmwareTargetKind(source, requestedKind string) string {
 	kind := strings.ToLower(strings.TrimSpace(requestedKind))
-	if kind == "" || kind == "auto" {
-		return inferFirmwareTarget(source)
+	if kind == "" {
+		return "bios"
 	}
 	return kind
-}
-
-func isHPESystemROMName(name string) bool {
-	if len(name) < 3 || name[0] != 'a' {
-		return false
-	}
-	return name[1] >= '0' && name[1] <= '9' && name[2] >= '0' && name[2] <= '9'
 }
 
 func firmwareTargetMatches(target FirmwareInventoryTarget, kind string) bool {
@@ -382,15 +366,21 @@ func firmwareTargetMatches(target FirmwareInventoryTarget, kind string) bool {
 
 func (c *ILOClient) SelectFirmwareTarget(ctx context.Context, source, requestedKind string) (FirmwareInventoryTarget, error) {
 	kind := strings.ToLower(strings.TrimSpace(requestedKind))
-	if kind == "" || kind == "auto" {
-		kind = inferFirmwareTarget(source)
+	if kind == "" {
+		kind = "bios"
 	}
-	if kind != "bios" && kind != "ilo" {
-		return FirmwareInventoryTarget{}, fmt.Errorf("cannot determine firmware target from %q; specify --target bios or --target ilo", source)
+	if kind == "auto" {
+		return FirmwareInventoryTarget{}, nil
 	}
 	targets, err := c.DiscoverFirmwareTargets(ctx)
 	if err != nil {
 		return FirmwareInventoryTarget{}, err
+	}
+	if kind == "manual" {
+		return selectManualFirmwareTarget(targets, os.Stdin, os.Stdout)
+	}
+	if kind != "bios" && kind != "ilo" {
+		return FirmwareInventoryTarget{}, fmt.Errorf("invalid firmware target %q; use auto, bios, ilo, or manual", kind)
 	}
 	var matches []FirmwareInventoryTarget
 	for _, target := range targets {
@@ -402,6 +392,41 @@ func (c *ILOClient) SelectFirmwareTarget(ctx context.Context, source, requestedK
 		return FirmwareInventoryTarget{}, fmt.Errorf("expected one updateable %s target, found %d", kind, len(matches))
 	}
 	return matches[0], nil
+}
+
+func selectManualFirmwareTarget(targets []FirmwareInventoryTarget, input io.Reader, output io.Writer) (FirmwareInventoryTarget, error) {
+	if len(targets) == 0 {
+		return FirmwareInventoryTarget{}, fmt.Errorf("firmware inventory is empty")
+	}
+
+	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "ID\tName\tVersion\tDescription")
+	for _, target := range targets {
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", target.ID, target.Name, target.Version, target.Description)
+	}
+	if err := writer.Flush(); err != nil {
+		return FirmwareInventoryTarget{}, fmt.Errorf("display firmware inventory: %w", err)
+	}
+
+	fmt.Fprint(output, "Enter firmware inventory ID: ")
+	reader := bufio.NewReader(input)
+	var selectedID string
+	if _, err := fmt.Fscanln(reader, &selectedID); err != nil {
+		return FirmwareInventoryTarget{}, fmt.Errorf("read firmware inventory ID: %w", err)
+	}
+	for _, target := range targets {
+		if target.ID != selectedID {
+			continue
+		}
+		if !target.Updateable {
+			return FirmwareInventoryTarget{}, fmt.Errorf("firmware inventory ID %q is not updateable", selectedID)
+		}
+		if target.ODataID == "" {
+			return FirmwareInventoryTarget{}, fmt.Errorf("firmware inventory ID %q has no @odata.id", selectedID)
+		}
+		return target, nil
+	}
+	return FirmwareInventoryTarget{}, fmt.Errorf("firmware inventory ID %q was not found", selectedID)
 }
 
 func (c *ILOClient) FirmwareTargetVersion(ctx context.Context, targetURI string) (string, error) {
@@ -443,7 +468,7 @@ func (c *ILOClient) UploadFirmwareMultipartWithTarget(ctx context.Context, image
 	if err != nil {
 		return "", fmt.Errorf("create update parameters part: %w", err)
 	}
-	parametersPayload := map[string]interface{}{"Targets": []string{}, "ForceUpdate": false}
+	parametersPayload := map[string]interface{}{"ForceUpdate": false}
 	if targetURI != "" {
 		parametersPayload["Targets"] = []string{targetURI}
 	}
@@ -518,9 +543,12 @@ func (c *ILOClient) UpdateFirmwareImageWithTarget(ctx context.Context, imagePath
 	if err != nil {
 		return FirmwareUpdateInfo{}, err
 	}
-	beforeVersion, err := c.FirmwareTargetVersion(ctx, target.ODataID)
-	if err != nil {
-		return FirmwareUpdateInfo{}, fmt.Errorf("read firmware target version: %w", err)
+	var beforeVersion string
+	if target.ODataID != "" {
+		beforeVersion, err = c.FirmwareTargetVersion(ctx, target.ODataID)
+		if err != nil {
+			return FirmwareUpdateInfo{}, fmt.Errorf("read firmware target version: %w", err)
+		}
 	}
 	capabilities, err := c.DiscoverFirmwareCapabilities(ctx)
 	if err != nil {

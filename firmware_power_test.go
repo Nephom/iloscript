@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -11,6 +12,57 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestParseFirmwareArgumentsTargetModes(t *testing.T) {
+	tests := []struct {
+		name       string
+		arguments  []string
+		targetKind string
+	}{
+		{name: "default bios", arguments: []string{"image.bin"}, targetKind: "bios"},
+		{name: "auto", arguments: []string{"image.bin", "--target", "auto"}, targetKind: "auto"},
+		{name: "manual", arguments: []string{"image.bin", "--target=manual"}, targetKind: "manual"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, targetKind, err := parseFirmwareArguments(test.arguments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if targetKind != test.targetKind {
+				t.Fatalf("target kind = %q, want %q", targetKind, test.targetKind)
+			}
+		})
+	}
+}
+
+func TestSelectManualFirmwareTargetUsesReturnedIDAndODataID(t *testing.T) {
+	targets := []FirmwareInventoryTarget{{
+		ID:          "returned-id-7",
+		Name:        "Network Controller",
+		Version:     "1.2.3",
+		Description: "Adapter firmware",
+		Updateable:  true,
+		ODataID:     "/redfish/v1/UpdateService/FirmwareInventory/99",
+	}}
+	var output bytes.Buffer
+	target, err := selectManualFirmwareTarget(targets, strings.NewReader("returned-id-7\n"), &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.ODataID != targets[0].ODataID {
+		t.Fatalf("odata id = %q, want %q", target.ODataID, targets[0].ODataID)
+	}
+	table := output.String()
+	if strings.Index(table, "ID") > strings.Index(table, "Name") ||
+		strings.Index(table, "Name") > strings.Index(table, "Version") ||
+		strings.Index(table, "Version") > strings.Index(table, "Description") {
+		t.Fatalf("manual table columns are out of order: %q", table)
+	}
+	if !strings.Contains(table, "returned-id-7") || !strings.Contains(table, "Adapter firmware") {
+		t.Fatalf("manual table does not contain returned values: %q", output.String())
+	}
+}
 
 func testClient(serverURL string) *ILOClient {
 	return &ILOClient{
@@ -62,6 +114,81 @@ func TestUpdateFirmwareImageMultipart(t *testing.T) {
 	}
 	if taskInfo.TaskURI != "/redfish/v1/TaskService/Tasks/1" || taskInfo.TargetURI != "/redfish/v1/UpdateService/FirmwareInventory/7" {
 		t.Fatalf("unexpected update info: %#v", taskInfo)
+	}
+}
+
+func TestUpdateFirmwareImageMultipartAutoOmitsTargets(t *testing.T) {
+	var updateParameters string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/redfish/v1/UpdateService/":
+			_ = json.NewEncoder(writer).Encode(map[string]string{"MultipartHttpPushUri": "/redfish/v1/UpdateService/MultipartHttpPush"})
+		case "/redfish/v1/UpdateService/MultipartHttpPush":
+			if err := request.ParseMultipartForm(1024 * 1024); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			updateParameters = request.MultipartForm.Value["UpdateParameters"][0]
+			writer.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	imagePath := filepath.Join(t.TempDir(), "firmware.bin")
+	if err := os.WriteFile(imagePath, []byte("firmware-test-image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := testClient(server.URL).UpdateFirmwareImageWithTarget(context.Background(), imagePath, "auto")
+	if err != nil {
+		t.Fatalf("UpdateFirmwareImageWithTarget returned error: %v", err)
+	}
+	if info.TargetURI != "" {
+		t.Fatalf("auto target URI = %q, want empty", info.TargetURI)
+	}
+	var parameters map[string]interface{}
+	if err := json.Unmarshal([]byte(updateParameters), &parameters); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := parameters["Targets"]; exists {
+		t.Fatalf("auto multipart parameters unexpectedly contain Targets: %s", updateParameters)
+	}
+}
+
+func TestUpdateFirmwareWithTargetAutoOmitsTargets(t *testing.T) {
+	var requestPayload map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/redfish/v1/UpdateService/":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"Actions": map[string]interface{}{
+					"#UpdateService.SimpleUpdate": map[string]string{"target": "/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate"},
+				},
+			})
+		case "/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate":
+			body, _ := io.ReadAll(request.Body)
+			if err := json.Unmarshal(body, &requestPayload); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writer.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	info, err := testClient(server.URL).UpdateFirmwareWithTarget(context.Background(), "https://example.test/firmware.bin", "auto")
+	if err != nil {
+		t.Fatalf("UpdateFirmwareWithTarget returned error: %v", err)
+	}
+	if info.TargetURI != "" {
+		t.Fatalf("auto target URI = %q, want empty", info.TargetURI)
+	}
+	if _, exists := requestPayload["Targets"]; exists {
+		t.Fatalf("auto request unexpectedly contains Targets: %#v", requestPayload)
 	}
 }
 
