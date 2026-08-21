@@ -1682,6 +1682,39 @@ func (c *ILOClient) ClearLogsAndReset() error {
 	return nil
 }
 
+func (c *ILOClient) ClearLog(logService string) error {
+	var logURL string
+	switch strings.ToUpper(logService) {
+	case "IML":
+		logURL = fmt.Sprintf("%s/Systems/1/LogServices/IML/Actions/LogService.ClearLog/", c.BaseURL)
+	case "IEL":
+		logURL = fmt.Sprintf("%s/Managers/1/LogServices/IEL/Actions/LogService.ClearLog/", c.BaseURL)
+	default:
+		return fmt.Errorf("unsupported log service: %s", logService)
+	}
+
+	req, err := http.NewRequest("POST", logURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create %s clear request: %v", logService, err)
+	}
+	req.Header.Set("X-Auth-Token", c.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.Session.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s clear request failed: %v", logService, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
+		body, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("%s clear failed with status %d: %s", logService, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	fmt.Printf("%s cleared successfully.\n", strings.ToUpper(logService))
+	return nil
+}
+
 func (c *ILOClient) FetchSensorData() error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1863,6 +1896,13 @@ func main() {
 		fmt.Printf("ilo_%s.bin\n", trimmedIloID)
 
 	case "-iml":
+		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--clear") {
+			if err := client.ClearLog("IML"); err != nil {
+				fmt.Printf("IML clear failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if len(os.Args) >= 4 && strings.EqualFold(os.Args[3], "monitor") {
 			fetchCount := 10
 			matchText := ""
@@ -2047,6 +2087,13 @@ func main() {
 			os.Exit(1)
 		}
 	case "-iel":
+		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--clear") {
+			if err := client.ClearLog("IEL"); err != nil {
+				fmt.Printf("IEL clear failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if err := client.FetchEventLogs(); err != nil {
 			fmt.Printf("EventLog get failed: %v\n", err)
 			os.Exit(1)
