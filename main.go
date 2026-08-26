@@ -611,86 +611,6 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 	return updateState, progress, nil
 }
 
-/*
-func (c *ILOClient) FetchIMLEvents(count int, matchText string) error {
-    defer func() {
-        if r := recover(); r != nil {
-            fmt.Printf("FetchIMLEvents recovered from panic: %v\n", r)
-        }
-    }()
-
-    url := fmt.Sprintf("%s/Systems/1/LogServices/IML/Entries?$top=%d", c.BaseURL, count)
-    req, err := http.NewRequest("GET", url, nil)
-    if err != nil {
-        return fmt.Errorf("failed to create request: %v", err)
-    }
-    req.Header.Set("X-Auth-Token", c.Token)
-
-    resp, err := c.Session.Do(req)
-    if err != nil {
-        return fmt.Errorf("failed to fetch IML events: %v", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != 200 {
-        return fmt.Errorf("unexpected status code while fetching IML events: %d", resp.StatusCode)
-    }
-
-    var data struct {
-        Members []struct {
-            Message  string `json:"Message"`
-            Severity string `json:"Severity"`
-        } `json:"Members"`
-    }
-
-    body, err := ioutil.ReadAll(resp.Body)
-    if err != nil {
-        return fmt.Errorf("failed to read response body: %v", err)
-    }
-
-    if err := json.Unmarshal(body, &data); err != nil {
-        return fmt.Errorf("failed to parse IML events JSON: %v", err)
-    }
-
-    fmt.Println("\n最近的 IML 事件:")
-    var colorCode string
-    matchFound := false
-    for _, entry := range data.Members {
-	    messageLower := strings.ToLower(entry.Message)
-	    severity := strings.ToLower(entry.Severity)
-	    // Select color based on severity
-	    switch severity {
-	    case "ok":
-		    colorCode = "\033[32m" // Green
-	    case "warning":
-		    colorCode = "\033[33m" // Yellow
-	    case "critical":
-		    colorCode = "\033[31m" // Red
-	    default:
-		    colorCode = "\033[0m" // Default (No color)
-	    }
-
-	    // Reset color after printing
-	    resetColor := "\033[0m"
-
-	    // 當 matchText 為空或 None 時，直接顯示所有訊息
-	    if matchText == "" || strings.ToLower(matchText) == "none" {
-		fmt.Printf("%s- %s: %s%s\n", colorCode, entry.Severity, entry.Message, resetColor)
-		matchFound = true
-	    } else if strings.Contains(messageLower, strings.ToLower(matchText)) {
-		// If matchText is specified, filter and display matching messages
-		fmt.Printf("%s- %s: %s%s\n", colorCode, entry.Severity, entry.Message, resetColor)
-		matchFound = true
-	    }
-    }
-
-    if !matchFound {
-	    fmt.Println("- 未找到相關的事件 -")
-    }
-    return nil
-}
-*/
-
 // func (c *ILOClient) FetchIMLEvents(count int, matchText string) error {
 func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter string) error {
 	defer func() {
@@ -732,80 +652,115 @@ func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter s
 		return fmt.Errorf("failed to retrieve total event count")
 	}
 
-	// 計算起始 ID
-	startID := int(totalCount) - count + 1
-	if startID < 1 {
-		startID = 1
-	}
-
-	// 準備最終要抓取的事件
-	var finalData struct {
-		Members []struct {
-			Message  string `json:"Message"`
-			Severity string `json:"Severity"`
-		} `json:"Members"`
-	}
-
-	// 逐一取得事件
-	var members []struct {
+	type imlEvent struct {
 		Message  string `json:"Message"`
 		Severity string `json:"Severity"`
 	}
 
-	for i := startID; i <= int(totalCount); i++ {
-		eventURL := fmt.Sprintf("%s/Systems/1/LogServices/IML/Entries/%d", c.BaseURL, i)
+	// 是否指定了過濾條件（matchText 或 severityFilter）
+	// matchText 大小寫不拘：空字串或 "none"（不分大小寫）視為未指定
+	matchTextLower := strings.ToLower(matchText)
+	hasMatchText := matchText != "" && matchTextLower != "none"
+	severityFilterLower := strings.ToLower(severityFilter)
+	hasSeverityFilter := severityFilter != ""
+	hasFilter := hasMatchText || hasSeverityFilter
+
+	matches := func(entry imlEvent) bool {
+		if hasSeverityFilter && strings.ToLower(entry.Severity) != severityFilterLower {
+			return false
+		}
+		if hasMatchText && !strings.Contains(strings.ToLower(entry.Message), matchTextLower) {
+			return false
+		}
+		return true
+	}
+
+	fetchEvent := func(id int) (imlEvent, bool, error) {
+		var eventData imlEvent
+		eventURL := fmt.Sprintf("%s/Systems/1/LogServices/IML/Entries/%d", c.BaseURL, id)
 		req, err := http.NewRequest("GET", eventURL, nil)
 		if err != nil {
-			return fmt.Errorf("failed to create event request: %v", err)
+			return eventData, false, fmt.Errorf("failed to create event request: %v", err)
 		}
 		req.Header.Set("X-Auth-Token", c.Token)
 
 		resp, err := c.Session.Do(req)
 		if err != nil {
-			return fmt.Errorf("failed to fetch IML event %d: %v", i, err)
+			return eventData, false, fmt.Errorf("failed to fetch IML event %d: %v", id, err)
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
-			continue // 跳過無法取得的事件
-		}
-
-		var eventData struct {
-			Message  string `json:"Message"`
-			Severity string `json:"Severity"`
+			return eventData, false, nil // 跳過無法取得的事件
 		}
 
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			return fmt.Errorf("failed to read event response body: %v", err)
+			return eventData, false, fmt.Errorf("failed to read event response body: %v", err)
 		}
 
 		if err := json.Unmarshal(body, &eventData); err != nil {
-			return fmt.Errorf("failed to parse event JSON: %v", err)
+			return eventData, false, fmt.Errorf("failed to parse event JSON: %v", err)
 		}
 
-		members = append(members, eventData)
+		return eventData, true, nil
 	}
 
-	// 反轉 slice 以符合最新事件在前
-	for i, j := 0, len(members)-1; i < j; i, j = i+1, j-1 {
-		members[i], members[j] = members[j], members[i]
-	}
+	// 最終要顯示的事件（依「最新事件在前」排序）
+	var members []imlEvent
 
-	finalData.Members = members
+	if hasFilter {
+		// 有指定 matchText 或 severity 時，不能只在「最新 count 筆」原始事件裡找，
+		// 否則符合條件的事件可能因為被更新的事件擠出視窗而找不到。
+		// 因此改成從最新事件往舊的方向掃描整個記錄，直到收集到 count 筆符合條件的事件為止。
+		for i := int(totalCount); i >= 1; i-- {
+			eventData, ok, err := fetchEvent(i)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			if matches(eventData) {
+				members = append(members, eventData)
+				if count > 0 && len(members) >= count {
+					break
+				}
+			}
+		}
+	} else {
+		// 未指定過濾條件時，維持原行為：只抓最新 count 筆事件
+		startID := int(totalCount) - count + 1
+		if startID < 1 {
+			startID = 1
+		}
+
+		var rawMembers []imlEvent
+		for i := startID; i <= int(totalCount); i++ {
+			eventData, ok, err := fetchEvent(i)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			rawMembers = append(rawMembers, eventData)
+		}
+
+		// 反轉 slice 以符合最新事件在前
+		for i, j := 0, len(rawMembers)-1; i < j; i, j = i+1, j-1 {
+			rawMembers[i], rawMembers[j] = rawMembers[j], rawMembers[i]
+		}
+		members = rawMembers
+	}
 
 	fmt.Println("\n最近的 IML 事件:")
 
 	var colorCode string
 	matchFound := false
 
-	for _, entry := range finalData.Members {
-		messageLower := strings.ToLower(entry.Message)
+	for _, entry := range members {
 		severity := strings.ToLower(entry.Severity)
-
-		if severityFilter != "" && severity != strings.ToLower(severityFilter) {
-			continue
-		}
 
 		// Select color based on severity
 		switch severity {
@@ -822,15 +777,8 @@ func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter s
 		// Reset color after printing
 		resetColor := "\033[0m"
 
-		// 當 matchText 為空或 None 時，直接顯示所有訊息
-		if matchText == "" || strings.ToLower(matchText) == "none" {
-			fmt.Printf("%s- %s: %s%s\n", colorCode, entry.Severity, entry.Message, resetColor)
-			matchFound = true
-		} else if strings.Contains(messageLower, strings.ToLower(matchText)) {
-			// If matchText is specified, filter and display matching messages
-			fmt.Printf("%s- %s: %s%s\n", colorCode, entry.Severity, entry.Message, resetColor)
-			matchFound = true
-		}
+		fmt.Printf("%s- %s: %s%s\n", colorCode, entry.Severity, entry.Message, resetColor)
+		matchFound = true
 	}
 
 	if !matchFound {
@@ -2081,8 +2029,34 @@ func main() {
 		}
 
 	case "-devices":
-		if err := client.FetchChaissDevices(); err != nil {
+		if err := client.FetchDevices(); err != nil {
 			fmt.Printf("Devices get failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "-storage":
+		sortByBay := false
+		ledMode := false
+		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--bay") {
+			sortByBay = true
+		} else if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--led") {
+			ledMode = true
+		} else if len(os.Args) == 5 && strings.EqualFold(os.Args[3], "--bay") && strings.EqualFold(os.Args[4], "--led") {
+			sortByBay = true
+			ledMode = true
+		} else if len(os.Args) != 3 {
+			fmt.Println("Usage: <ilo_ip> -storage [--bay] [--led]")
+			os.Exit(1)
+		}
+		ctx, cancel := monitorContext()
+		defer cancel()
+		var storageErr error
+		if ledMode {
+			storageErr = client.RunStorageLED(ctx, sortByBay)
+		} else {
+			storageErr = client.FetchStorageDevices(sortByBay)
+		}
+		if storageErr != nil {
+			fmt.Printf("Storage operation failed: %v\n", storageErr)
 			os.Exit(1)
 		}
 	case "-sensors":
