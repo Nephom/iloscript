@@ -1611,8 +1611,15 @@ func (c *ILOClient) ClearLogsAndReset() error {
 	ahsURL := fmt.Sprintf("%s/Managers/1/ActiveHealthSystem/Actions/HpeiLOActiveHealthSystem.ClearLog", c.BaseURL)
 	resetURL := fmt.Sprintf("%s/Managers/1/Actions/Manager.Reset", c.BaseURL)
 
-	// Create a list of URLs to POST to
-	urls := []string{ielURL, imlURL, ahsURL}
+	// Keep request URLs separate from the labels shown to the user.
+	requests := []struct {
+		label string
+		url   string
+	}{
+		{label: "Clear IEL...", url: ielURL},
+		{label: "Clear IML...", url: imlURL},
+		{label: "Clear AHS...", url: ahsURL},
+	}
 
 	// Set headers for authentication
 	headers := map[string]string{
@@ -1621,19 +1628,19 @@ func (c *ILOClient) ClearLogsAndReset() error {
 	}
 
 	// Function to perform POST requests
-	postRequest := func(url string, payload interface{}) error {
+	postRequest := func(label, url string, payload interface{}) error {
 		var requestBody io.Reader
 		if payload != nil {
 			body, err := json.Marshal(payload)
 			if err != nil {
-				return fmt.Errorf("failed to marshal request payload for %s: %v", url, err)
+				return fmt.Errorf("failed to marshal request payload for %s: %v", label, err)
 			}
 			requestBody = bytes.NewReader(body)
 		}
 
 		req, err := http.NewRequest("POST", url, requestBody)
 		if err != nil {
-			return fmt.Errorf("failed to create request for %s: %v", url, err)
+			return fmt.Errorf("failed to create request for %s: %v", label, err)
 		}
 
 		// Set headers
@@ -1643,22 +1650,22 @@ func (c *ILOClient) ClearLogsAndReset() error {
 
 		resp, err := c.Session.Do(req)
 		if err != nil {
-			return fmt.Errorf("request to %s failed: %v", url, err)
+			return fmt.Errorf("%s failed: %v", label, err)
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 			body, _ := ioutil.ReadAll(resp.Body)
-			return fmt.Errorf("request to %s failed with status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+			return fmt.Errorf("%s failed with status %d: %s", label, resp.StatusCode, strings.TrimSpace(string(body)))
 		}
 
-		fmt.Printf("Request to %s completed.\n", url)
+		fmt.Printf("%s completed.\n", label)
 		return nil
 	}
 
 	// Clear logs by posting to each URL
-	for _, url := range urls {
-		if err := postRequest(url, nil); err != nil {
+	for _, request := range requests {
+		if err := postRequest(request.label, request.url, nil); err != nil {
 			return err
 		}
 	}
@@ -1668,7 +1675,7 @@ func (c *ILOClient) ClearLogsAndReset() error {
 	time.Sleep(120 * time.Second)
 
 	// Perform iLO Reset
-	if err := postRequest(resetURL, map[string]string{"ResetType": "ForceRestart"}); err != nil {
+	if err := postRequest("iLO Reset", resetURL, map[string]string{"ResetType": "ForceRestart"}); err != nil {
 		return err
 	}
 
