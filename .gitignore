@@ -1,2 +1,4 @@
 .opencode/
 *_test.go
+.env
+/iloscript

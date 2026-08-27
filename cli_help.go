@@ -3,14 +3,14 @@ package main
 import "fmt"
 
 func printHelp() {
-	fmt.Println("iloscript 1.2.0 - HPE iLO Redfish command line client")
+	fmt.Println("iloscript 1.2.1 - HPE iLO Redfish command line client")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  iloscript <ilo_ip> <command> [arguments]")
 	fmt.Println()
 	fmt.Println("Authentication:")
-	fmt.Println("  ILO_USERNAME and ILO_PASSWORD environment variables are used when set.")
-	fmt.Println("  Otherwise the legacy default account Administrator/compaq is used.")
+	fmt.Println("  ILO_USERNAME and ILO_PASSWORD must be set, either as environment")
+	fmt.Println("  variables or in a .env file in the working directory (see .env.example).")
 	fmt.Println("  -v, --verbose                       Print safe HTTP/task diagnostics to stderr.")
 	fmt.Println()
 	fmt.Println("System and inventory commands:")

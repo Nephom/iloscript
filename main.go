@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 type ILOClient struct {
@@ -611,50 +613,142 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 	return updateState, progress, nil
 }
 
-// func (c *ILOClient) FetchIMLEvents(count int, matchText string) error {
-func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter string) error {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Printf("FetchIMLEvents recovered from panic: %v\n", r)
-		}
-	}()
+// imlEvent represents one IML (Integrated Management Log) entry.
+// ID is the entry's actual number on iLO (used to build the /Entries/{ID}
+// query URL, and also serves as the unique key for detecting new events).
+// It is deliberately excluded from JSON decoding (json:"-") because the
+// Redfish response's "Id" field is a string (e.g. "5"), which would fail
+// to unmarshal into this int field; ID is instead set manually after decoding.
+// Created is the standard Redfish LogEntry timestamp field; some iLO
+// firmware versions' IML service may not return it, in which case it will
+// be an empty string and the caller must fall back accordingly.
+type imlEvent struct {
+	ID       int    `json:"-"`
+	Message  string `json:"Message"`
+	Severity string `json:"Severity"`
+	Created  string `json:"Created"`
+}
 
+// imlGroup 是給人看的顯示單位：把「連續且 Severity+Message 完全相同」的原始 imlEvent
+// 合併成一組，並附上出現次數，模仿 iLO IML 原生介面對重複訊息的呈現方式。
+type imlGroup struct {
+	Severity  string
+	Message   string
+	Count     int  // 這組合併了多少筆連續且相同的原始記錄
+	Uncertain bool // true 表示這組位於抓取視窗的最舊邊界，且視窗是因抓滿 count 筆而被截斷，
+	// 因此真實次數可能比 Count 更多（視窗外還有相同訊息但沒抓到）
+	Latest imlEvent // 這組當中最新的一筆原始記錄（用於取得時間等資訊）
+}
+
+// groupIMLEvents 將依「新到舊」排序的 members 合併成顯示用的分組列表。
+// truncatedAtBoundary 表示 members 中最舊的那一筆，是因為已經抓滿 count 筆而停止抓取
+// （而非真的抓到了 log 的最開頭），此時最後一組會標記為 Uncertain。
+func groupIMLEvents(members []imlEvent, truncatedAtBoundary bool) []imlGroup {
+	var groups []imlGroup
+	for _, entry := range members {
+		if n := len(groups); n > 0 &&
+			groups[n-1].Severity == entry.Severity &&
+			groups[n-1].Message == entry.Message {
+			groups[n-1].Count++
+			continue
+		}
+		groups = append(groups, imlGroup{
+			Severity: entry.Severity,
+			Message:  entry.Message,
+			Count:    1,
+			Latest:   entry,
+		})
+	}
+	if truncatedAtBoundary && len(groups) > 0 {
+		groups[len(groups)-1].Uncertain = true
+	}
+	return groups
+}
+
+// imlSeverityColor 依嚴重度回傳對應的 ANSI 顏色碼，供 IML 相關的各種輸出共用。
+func imlSeverityColor(severity string) string {
+	switch strings.ToLower(severity) {
+	case "ok":
+		return "\033[32m" // Green
+	case "warning":
+		return "\033[33m" // Yellow
+	case "critical":
+		return "\033[31m" // Red
+	default:
+		return "\033[0m" // Default (No color)
+	}
+}
+
+// formatIMLGroupLines 把分組後的 IML 事件轉成一行一個字串（含嚴重度上色），
+// 供直接列印使用，也供 MonitorIML 快取起來重複重繪畫面時使用。
+func formatIMLGroupLines(groups []imlGroup) []string {
+	resetColor := "\033[0m"
+
+	var lines []string
+	for _, group := range groups {
+		colorCode := imlSeverityColor(group.Severity)
+
+		switch {
+		case group.Uncertain:
+			lines = append(lines, fmt.Sprintf("%s- %s: %s (Count: %d+...)%s", colorCode, group.Severity, group.Message, group.Count, resetColor))
+		case group.Count > 1:
+			lines = append(lines, fmt.Sprintf("%s- %s: %s (Count: %d)%s", colorCode, group.Severity, group.Message, group.Count, resetColor))
+		default:
+			lines = append(lines, fmt.Sprintf("%s- %s: %s%s", colorCode, group.Severity, group.Message, resetColor))
+		}
+	}
+
+	if len(lines) == 0 {
+		lines = append(lines, "- 未找到相關的事件 -")
+	}
+
+	return lines
+}
+
+// printIMLGroups 以現有的嚴重度上色規則印出分組後的 IML 事件清單。
+func printIMLGroups(header string, groups []imlGroup) {
+	fmt.Println(header)
+	for _, line := range formatIMLGroupLines(groups) {
+		fmt.Println(line)
+	}
+}
+
+// fetchIMLEntries 負責向 iLO 抓取、過濾並排序 IML 事件（新到舊），
+// 不做任何印出動作，供一次性查詢與監控模式共用。
+// truncatedAtBoundary 表示回傳結果中最舊的那一筆，是否是因為抓滿 count 筆而被截斷
+// （而不是因為已經抓到 log 最開頭），供上層判斷合併顯示時是否需要標記「次數可能不完整」。
+func (c *ILOClient) fetchIMLEntries(count int, matchText string, severityFilter string) ([]imlEvent, int, bool, error) {
 	// 先取得總事件數
 	countURL := fmt.Sprintf("%s/Systems/1/LogServices/IML/Entries", c.BaseURL)
 	req, err := http.NewRequest("GET", countURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to create count request: %v", err)
+		return nil, 0, false, fmt.Errorf("failed to create count request: %v", err)
 	}
 	req.Header.Set("X-Auth-Token", c.Token)
 	resp, err := c.Session.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to fetch IML events count: %v", err)
+		return nil, 0, false, fmt.Errorf("failed to fetch IML events count: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("unexpected status code while fetching IML events count: %d", resp.StatusCode)
+		return nil, 0, false, fmt.Errorf("unexpected status code while fetching IML events count: %d", resp.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read count response body: %v", err)
+		return nil, 0, false, fmt.Errorf("failed to read count response body: %v", err)
 	}
 
 	var countData map[string]interface{}
 	if err := json.Unmarshal(body, &countData); err != nil {
-		return fmt.Errorf("failed to parse count JSON: %v", err)
+		return nil, 0, false, fmt.Errorf("failed to parse count JSON: %v", err)
 	}
 
 	// 取得總事件數
 	totalCount, ok := countData["Members@odata.count"].(float64)
 	if !ok {
-		return fmt.Errorf("failed to retrieve total event count")
-	}
-
-	type imlEvent struct {
-		Message  string `json:"Message"`
-		Severity string `json:"Severity"`
+		return nil, 0, false, fmt.Errorf("failed to retrieve total event count")
 	}
 
 	// 是否指定了過濾條件（matchText 或 severityFilter）
@@ -702,12 +796,14 @@ func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter s
 		if err := json.Unmarshal(body, &eventData); err != nil {
 			return eventData, false, fmt.Errorf("failed to parse event JSON: %v", err)
 		}
+		eventData.ID = id
 
 		return eventData, true, nil
 	}
 
 	// 最終要顯示的事件（依「最新事件在前」排序）
 	var members []imlEvent
+	truncatedAtBoundary := false
 
 	if hasFilter {
 		// 有指定 matchText 或 severity 時，不能只在「最新 count 筆」原始事件裡找，
@@ -716,7 +812,7 @@ func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter s
 		for i := int(totalCount); i >= 1; i-- {
 			eventData, ok, err := fetchEvent(i)
 			if err != nil {
-				return err
+				return nil, 0, false, err
 			}
 			if !ok {
 				continue
@@ -724,6 +820,8 @@ func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter s
 			if matches(eventData) {
 				members = append(members, eventData)
 				if count > 0 && len(members) >= count {
+					// 尚未掃描到 id=1 就已收集滿 count 筆，代表視窗外可能還有符合條件但未抓到的舊事件。
+					truncatedAtBoundary = i > 1
 					break
 				}
 			}
@@ -731,6 +829,7 @@ func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter s
 	} else {
 		// 未指定過濾條件時，維持原行為：只抓最新 count 筆事件
 		startID := int(totalCount) - count + 1
+		truncatedAtBoundary = startID > 1
 		if startID < 1 {
 			startID = 1
 		}
@@ -739,7 +838,7 @@ func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter s
 		for i := startID; i <= int(totalCount); i++ {
 			eventData, ok, err := fetchEvent(i)
 			if err != nil {
-				return err
+				return nil, 0, false, err
 			}
 			if !ok {
 				continue
@@ -754,36 +853,24 @@ func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter s
 		members = rawMembers
 	}
 
-	fmt.Println("\n最近的 IML 事件:")
+	return members, int(totalCount), truncatedAtBoundary, nil
+}
 
-	var colorCode string
-	matchFound := false
-
-	for _, entry := range members {
-		severity := strings.ToLower(entry.Severity)
-
-		// Select color based on severity
-		switch severity {
-		case "ok":
-			colorCode = "\033[32m" // Green
-		case "warning":
-			colorCode = "\033[33m" // Yellow
-		case "critical":
-			colorCode = "\033[31m" // Red
-		default:
-			colorCode = "\033[0m" // Default (No color)
+// func (c *ILOClient) FetchIMLEvents(count int, matchText string) error {
+func (c *ILOClient) FetchIMLEvents(count int, matchText string, severityFilter string) error {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("FetchIMLEvents recovered from panic: %v\n", r)
 		}
+	}()
 
-		// Reset color after printing
-		resetColor := "\033[0m"
-
-		fmt.Printf("%s- %s: %s%s\n", colorCode, entry.Severity, entry.Message, resetColor)
-		matchFound = true
+	members, _, truncatedAtBoundary, err := c.fetchIMLEntries(count, matchText, severityFilter)
+	if err != nil {
+		return err
 	}
 
-	if !matchFound {
-		fmt.Println("- 未找到相關的事件 -")
-	}
+	groups := groupIMLEvents(members, truncatedAtBoundary)
+	printIMLGroups("\n最近的 IML 事件:", groups)
 
 	return nil
 }
@@ -1811,12 +1898,17 @@ func main() {
 	client.Verbose = verbose
 	client.InsecureImageTLS = insecureImageTLS
 
-	// 從環境變量或配置文件獲取認證信息
+	// 從 .env 檔案或環境變量獲取認證信息
+	// godotenv.Load 找不到 .env 檔案時只會回傳錯誤但不影響流程，
+	// 因為正式環境可能是直接注入環境變量而非透過 .env 檔案。
+	_ = godotenv.Load()
+
 	username := os.Getenv("ILO_USERNAME")
 	password := os.Getenv("ILO_PASSWORD")
 	if username == "" || password == "" {
-		username = "Administrator"
-		password = "compaq"
+		fmt.Println("Error: ILO_USERNAME and ILO_PASSWORD must be set via environment variables or a .env file.")
+		fmt.Println("See .env.example for the expected format.")
+		os.Exit(1)
 	}
 
 	if err := client.Login(username, password); err != nil {
