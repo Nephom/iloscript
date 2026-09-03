@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -299,37 +298,6 @@ func (c *ILOClient) FetchSystemModel() {
 				return
 			}
 		}
-	} else {
-		fmt.Printf("Failed to fetch system info: %d\n", resp.StatusCode)
-	}
-}
-
-func (c *ILOClient) FetchSystemInfo() {
-	url := c.BaseURL + "/Systems/1/"
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("X-Auth-Token", c.Token)
-
-	resp, err := c.Session.Do(req)
-	if err != nil {
-		fmt.Printf("Failed to fetch system info: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 200 {
-		body, _ := ioutil.ReadAll(resp.Body)
-		var data map[string]interface{}
-		if err := json.Unmarshal(body, &data); err == nil {
-			if systemModel, ok := data["Model"]; ok {
-				fmt.Printf("System Model: %s\n", systemModel)
-				return
-			}
-			if pcaSerialNumber, ok := data["Oem"].(map[string]interface{})["Hpe"].(map[string]interface{})["PCASerialNumber"].(string); ok {
-				fmt.Printf("PCASerialNumber: %s\n", pcaSerialNumber)
-				return
-			}
-		}
-		fmt.Println("PCASerialNumber not found!")
 	} else {
 		fmt.Printf("Failed to fetch system info: %d\n", resp.StatusCode)
 	}
@@ -938,77 +906,6 @@ func (c *ILOClient) MonitorUpdate(taskURI, matchText, targetKind string, timeout
 		}
 	}
 	return fmt.Errorf("firmware update timeout")
-}
-
-func (c *ILOClient) FetchDebugInfo() (string, string, error) {
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		// 拼接專屬的 dbug_info 請求 URL
-		baseURLWithoutScheme := strings.TrimPrefix(c.BaseURL, "https://")
-		iloIP := strings.Split(baseURLWithoutScheme, "/")[0]
-		debugInfoURL := fmt.Sprintf("https://%s/json/dbug_info", iloIP)
-
-		req, err := http.NewRequest("GET", debugInfoURL, nil)
-		if err != nil {
-			return "", "", fmt.Errorf("failed to create debug info request: %v", err)
-		}
-
-		// 添加模擬瀏覽器的 Headers
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
-		req.Header.Set("Cache-Control", "no-cache")
-		req.Header.Set("Connection", "keep-alive")
-		req.Header.Set("Cookie", fmt.Sprintf("sessionKey=%s", c.Token))
-
-		// 發送請求
-		resp, err := c.Session.Do(req)
-		if err != nil {
-			return "", "", fmt.Errorf("failed to fetch debug info: %v", err)
-		}
-		defer resp.Body.Close()
-
-		// 讀取響應體
-		var body []byte
-		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusInternalServerError {
-			body, err = io.ReadAll(resp.Body)
-			if err != nil {
-				return "", "", fmt.Errorf("failed to read response body: %v", err)
-			}
-		} else {
-			// 如果不是 200 或 500，則返回錯誤，並處理錯誤頁面內容
-			body, err = io.ReadAll(resp.Body)
-			if err != nil {
-				return "", "", fmt.Errorf("failed to read error response body: %v", err)
-			}
-			fmt.Fprintf(os.Stderr, "Attempt %d: Received unexpected status code %d\nResponse body: %s\n", attempt, resp.StatusCode, string(body))
-			return "", "", fmt.Errorf("failed to fetch debug info, status: %d", resp.StatusCode)
-		}
-
-		// 使用正則提取 serial_num 和 ilo_asic_id
-		serialNumRegex := regexp.MustCompile(`"serial_num"\s*:\s*"([^"]+)"`)
-		iloAsicIDRegex := regexp.MustCompile(`"ilo_asic_id"\s*:\s*"([^"]+)"`)
-
-		serialNumMatches := serialNumRegex.FindStringSubmatch(string(body))
-		iloAsicIDMatches := iloAsicIDRegex.FindStringSubmatch(string(body))
-
-		if len(serialNumMatches) < 2 || len(iloAsicIDMatches) < 2 {
-			// 如果沒有找到 serial_num 或 ilo_asic_id
-			fmt.Fprintf(os.Stderr, "Attempt %d: serial_num or ilo_asic_id not found in response body\n", attempt)
-			if attempt < maxRetries {
-				fmt.Fprintf(os.Stderr, "Retrying in %v...\n", retryInterval)
-				time.Sleep(retryInterval)
-				continue
-			}
-			return "", "", fmt.Errorf("failed to find serial_num or ilo_asic_id after %d attempts", maxRetries)
-		}
-
-		// 提取並返回結果
-		serialNum := serialNumMatches[1]
-		iloAsicID := iloAsicIDMatches[1]
-		return serialNum, iloAsicID, nil
-	}
-
-	return "", "", fmt.Errorf("failed to fetch debug info after %d attempts", maxRetries)
 }
 
 func (c *ILOClient) PowerControl(action string) error {
@@ -1925,20 +1822,6 @@ func main() {
 	case "-model":
 		client.FetchSystemModel()
 
-	case "-pca":
-		client.FetchSystemInfo()
-		serialNum, iloAsicID, err := client.FetchDebugInfo()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to fetch debug info: %v\n", err)
-			os.Exit(1)
-		}
-
-		fmt.Printf("Serial Num: %s\n", serialNum)
-		fmt.Printf("iLO ASIC ID: %s\n", iloAsicID)
-
-		trimmedIloID := strings.TrimPrefix(iloAsicID, "0x")
-		fmt.Printf("ilo_%s.bin\n", trimmedIloID)
-
 	case "-iml":
 		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--clear") {
 			if err := client.ClearLog("IML"); err != nil {
@@ -2166,6 +2049,21 @@ func main() {
 		}
 		if err := client.FetchEventLogs(); err != nil {
 			fmt.Printf("EventLog get failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "-ahs":
+		outputFile := ""
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "-o" || os.Args[i] == "--output" {
+				if i+1 < len(os.Args) {
+					outputFile = os.Args[i+1]
+				}
+			}
+		}
+		ctx, cancel := monitorContext()
+		defer cancel()
+		if err := client.DownloadAHS(ctx, outputFile); err != nil {
+			fmt.Printf("AHS download failed: %v\n", err)
 			os.Exit(1)
 		}
 	case "-reset":

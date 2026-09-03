@@ -22,14 +22,6 @@ func (c *ILOClient) FetchDevices() error {
 	}
 	fmt.Println()
 
-	fmt.Println("##### Storage #####")
-	if drives, err := c.fetchStorageDrives(ctx, false); err != nil {
-		fmt.Println(friendlySectionError(err))
-	} else {
-		printStorageDevices(drives)
-	}
-	fmt.Println()
-
 	fmt.Println("##### Processor #####")
 	if err := c.printProcessors(ctx); err != nil {
 		fmt.Println(friendlySectionError(err))
@@ -45,6 +37,14 @@ func (c *ILOClient) FetchDevices() error {
 	fmt.Println("##### NIC #####")
 	if err := c.printNICs(ctx); err != nil {
 		fmt.Println(friendlySectionError(err))
+	}
+	fmt.Println()
+
+	fmt.Println("##### Storage #####")
+	if drives, err := c.fetchStorageDrives(ctx, false); err != nil {
+		fmt.Println(friendlySectionError(err))
+	} else {
+		printStorageDevices(drives)
 	}
 	fmt.Println()
 
@@ -164,6 +164,19 @@ func formatIntIfPositive(value int, suffix string) string {
 	return strconv.Itoa(value) + suffix
 }
 
+func formatCacheSizeKB(sizeKB int) string {
+	if sizeKB <= 0 {
+		return ""
+	}
+	if sizeKB >= 1024*1024 {
+		return fmt.Sprintf("%dGB", sizeKB/(1024*1024))
+	}
+	if sizeKB >= 1024 {
+		return fmt.Sprintf("%dMB", sizeKB/1024)
+	}
+	return fmt.Sprintf("%dKB", sizeKB)
+}
+
 func isAbsent(state string) bool {
 	return strings.EqualFold(state, "Absent")
 }
@@ -197,17 +210,26 @@ func friendlySectionError(err error) string {
 // Processor
 // ---------------------------------------------------------------------------
 
+type redfishProcessorCache struct {
+	Name            string `json:"Name"`
+	InstalledSizeKB int    `json:"InstalledSizeKB"`
+}
+
 type redfishProcessor struct {
-	Id           string `json:"Id"`
-	Socket       string `json:"Socket"`
-	Manufacturer string `json:"Manufacturer"`
-	Model        string `json:"Model"`
-	MaxSpeedMHz  int    `json:"MaxSpeedMHz"`
-	TotalCores   int    `json:"TotalCores"`
-	TotalThreads int    `json:"TotalThreads"`
+	Id          string `json:"Id"`
+	Socket      string `json:"Socket"`
+	Model       string `json:"Model"`
+	MaxSpeedMHz int    `json:"MaxSpeedMHz"`
+	Oem         struct {
+		Hpe struct {
+			RatedSpeedMHz int                     `json:"RatedSpeedMHz"`
+			Caches        []redfishProcessorCache `json:"Cache"`
+		} `json:"Hpe"`
+	} `json:"Oem"`
+	TotalCores   int `json:"TotalCores"`
+	TotalThreads int `json:"TotalThreads"`
 	Status       struct {
-		Health string `json:"Health"`
-		State  string `json:"State"`
+		State string `json:"State"`
 	} `json:"Status"`
 }
 
@@ -217,7 +239,7 @@ func (c *ILOClient) printProcessors(ctx context.Context) error {
 		return err
 	}
 
-	headers := []string{"Socket", "Manufacturer", "Model", "Speed", "Cores", "Threads", "Health"}
+	headers := []string{"Socket", "Model", "Speed", "L1-Cache", "L2-Cache", "L3-Cache", "Cores", "Threads"}
 	var rows [][]string
 
 	for _, uri := range uris {
@@ -239,19 +261,29 @@ func (c *ILOClient) printProcessors(ctx context.Context) error {
 		if socket == "" {
 			socket = processor.Id
 		}
+		speedMHz := processor.Oem.Hpe.RatedSpeedMHz
+		if speedMHz <= 0 {
+			speedMHz = processor.MaxSpeedMHz
+		}
 		speed := ""
-		if processor.MaxSpeedMHz > 0 {
-			speed = fmt.Sprintf("%.2fGHz", float64(processor.MaxSpeedMHz)/1000)
+		if speedMHz > 0 {
+			speed = fmt.Sprintf("%.2fGHz", float64(speedMHz)/1000)
+		}
+
+		cacheSizes := make(map[string]int)
+		for _, cache := range processor.Oem.Hpe.Caches {
+			cacheSizes[cache.Name] = cache.InstalledSizeKB
 		}
 
 		rows = append(rows, []string{
 			socket,
-			processor.Manufacturer,
 			processor.Model,
 			speed,
+			formatCacheSizeKB(cacheSizes["L1-Cache"]),
+			formatCacheSizeKB(cacheSizes["L2-Cache"]),
+			formatCacheSizeKB(cacheSizes["L3-Cache"]),
 			formatIntIfPositive(processor.TotalCores, ""),
 			formatIntIfPositive(processor.TotalThreads, ""),
-			processor.Status.Health,
 		})
 	}
 
@@ -410,8 +442,8 @@ func (c *ILOClient) printNICs(ctx context.Context) error {
 }
 
 func (c *ILOClient) printNetworkAdapters(ctx context.Context, adapterURIs []string) error {
-	headers := []string{"Adapter", "Manufacturer", "Model", "PartNumber", "SerialNumber", "Firmware", "Port", "MACAddress", "Speed", "LinkStatus", "Health"}
-	var rows [][]string
+	var portRows [][]string
+	var adapterRows [][]string
 
 	for _, adapterURI := range adapterURIs {
 		body, _, err := c.getJSON(ctx, c.resolveURI(adapterURI))
@@ -433,6 +465,11 @@ func (c *ILOClient) printNetworkAdapters(ctx context.Context, adapterURIs []stri
 		if len(adapter.Controllers) > 0 {
 			firmware = adapter.Controllers[0].FirmwarePackageVersion
 		}
+
+		adapterRows = append(adapterRows, []string{
+			name, adapter.Manufacturer, adapter.Model,
+			adapter.PartNumber, adapter.SerialNumber, firmware,
+		})
 
 		var macAddresses []string
 		if adapter.NetworkDeviceFunctions.ODataID != "" {
@@ -458,9 +495,7 @@ func (c *ILOClient) printNetworkAdapters(ctx context.Context, adapterURIs []stri
 		}
 
 		var linkStatuses []string
-		var speeds []string
 		if adapter.Ports.ODataID != "" {
-			// Current Redfish "Port" schema: speed is reported in Gbps.
 			portURIs, err := c.fetchCollectionMemberURIs(ctx, adapter.Ports.ODataID)
 			if err != nil {
 				fmt.Printf("Warning: failed to fetch ports for %s: %v\n", adapterURI, err)
@@ -470,26 +505,17 @@ func (c *ILOClient) printNetworkAdapters(ctx context.Context, adapterURIs []stri
 				if err != nil {
 					fmt.Printf("Warning: failed to fetch port %s: %v\n", portURI, err)
 					linkStatuses = append(linkStatuses, "")
-					speeds = append(speeds, "")
 					continue
 				}
 				var port redfishNetworkPort
 				if err := json.Unmarshal(portBody, &port); err != nil {
 					fmt.Printf("Warning: failed to parse port %s: %v\n", portURI, err)
 					linkStatuses = append(linkStatuses, "")
-					speeds = append(speeds, "")
 					continue
 				}
 				linkStatuses = append(linkStatuses, port.LinkStatus)
-				speed := ""
-				if port.CurrentSpeedGbps > 0 {
-					speed = formatIntIfPositive(int(port.CurrentSpeedGbps*1000+0.5), "Mbps")
-				}
-				speeds = append(speeds, speed)
 			}
 		} else if adapter.NetworkPorts.ODataID != "" {
-			// Older Redfish "NetworkPort" schema: speed is already in Mbps,
-			// and the MAC address is reported directly on the port.
 			portURIs, err := c.fetchCollectionMemberURIs(ctx, adapter.NetworkPorts.ODataID)
 			if err != nil {
 				fmt.Printf("Warning: failed to fetch network ports for %s: %v\n", adapterURI, err)
@@ -499,18 +525,15 @@ func (c *ILOClient) printNetworkAdapters(ctx context.Context, adapterURIs []stri
 				if err != nil {
 					fmt.Printf("Warning: failed to fetch network port %s: %v\n", portURI, err)
 					linkStatuses = append(linkStatuses, "")
-					speeds = append(speeds, "")
 					continue
 				}
 				var port redfishNetworkPortLegacy
 				if err := json.Unmarshal(portBody, &port); err != nil {
 					fmt.Printf("Warning: failed to parse network port %s: %v\n", portURI, err)
 					linkStatuses = append(linkStatuses, "")
-					speeds = append(speeds, "")
 					continue
 				}
 				linkStatuses = append(linkStatuses, port.LinkStatus)
-				speeds = append(speeds, formatIntIfPositive(port.CurrentLinkSpeedMbps, "Mbps"))
 				if len(port.AssociatedNetworkAddresses) > 0 {
 					for len(macAddresses) <= index {
 						macAddresses = append(macAddresses, "")
@@ -527,8 +550,7 @@ func (c *ILOClient) printNetworkAdapters(ctx context.Context, adapterURIs []stri
 			portCount = len(macAddresses)
 		}
 		if portCount == 0 {
-			// No per-port data at all; still show the adapter itself.
-			rows = append(rows, []string{name, adapter.Manufacturer, adapter.Model, adapter.PartNumber, adapter.SerialNumber, firmware, "", "", "", "", adapter.Status.Health})
+			portRows = append(portRows, []string{name, "", "", adapter.Status.Health})
 			continue
 		}
 
@@ -538,27 +560,24 @@ func (c *ILOClient) printNetworkAdapters(ctx context.Context, adapterURIs []stri
 				mac = macAddresses[index]
 			}
 			linkStatus := ""
-			speed := ""
 			if index < len(linkStatuses) {
 				linkStatus = linkStatuses[index]
 			}
-			if index < len(speeds) {
-				speed = speeds[index]
-			}
 			portLabel := fmt.Sprintf("%d", index+1)
 
-			// Adapter-level identity columns are only shown on the first
-			// port row to avoid needless repetition-driven noise.
-			adapterName, manufacturer, model, partNumber, serialNumber, fw, health := "", "", "", "", "", "", ""
-			if index == 0 {
-				adapterName, manufacturer, model, partNumber, serialNumber, fw, health = name, adapter.Manufacturer, adapter.Model, adapter.PartNumber, adapter.SerialNumber, firmware, adapter.Status.Health
-			}
-
-			rows = append(rows, []string{adapterName, manufacturer, model, partNumber, serialNumber, fw, portLabel, mac, speed, linkStatus, health})
+			portRows = append(portRows, []string{name, portLabel, mac, linkStatus, adapter.Status.Health})
 		}
 	}
 
-	printDynamicTable(headers, rows)
+	printDynamicTable(
+		[]string{"Adapter", "Port", "MACAddress", "LinkStatus", "Health"},
+		portRows,
+	)
+	fmt.Println()
+	printDynamicTable(
+		[]string{"Adapter", "Manufacturer", "Model", "PartNumber", "SerialNumber", "Firmware"},
+		adapterRows,
+	)
 	return nil
 }
 

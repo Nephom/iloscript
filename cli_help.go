@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 func printHelp() {
-	fmt.Println("iloscript 1.2.1 - HPE iLO Redfish command line client")
+	fmt.Println("iloscript 1.2.2 - HPE iLO Redfish command line client")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  iloscript <ilo_ip> <command> [arguments]")
@@ -15,7 +15,6 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("System and inventory commands:")
 	fmt.Println("  -model                              Show the system model.")
-	fmt.Println("  -pca                                Show PCA serial and iLO ASIC information.")
 	fmt.Println("  -ver                                List firmware inventory.")
 	fmt.Println("  -devices                            Hardware report: firmware, storage, CPU, memory, NIC, power supply.")
 	fmt.Println("  -storage                            List storage drives sorted by Port, Box, and Bay.")
@@ -25,6 +24,10 @@ func printHelp() {
 	fmt.Println("  -sensors                            List chassis sensor readings.")
 	fmt.Println("  -iel                                Show server EventLog entries.")
 	fmt.Println("  -iel --clear                        Clear only the IEL entries.")
+	fmt.Println()
+	fmt.Println("AHS commands:")
+	fmt.Println("  -ahs [-o <output_file>]              Download the full AHS log (downloadAll).")
+	fmt.Println("  -o, --output <file>                  Write the AHS log to <file> instead of the default name.")
 	fmt.Println()
 	fmt.Println("IML commands:")
 	fmt.Println("  -iml [count] [text] [severity]       Fetch IML entries once.")
@@ -65,6 +68,8 @@ func printHelp() {
 	fmt.Println("  iloscript 192.0.2.10 -power monitor")
 	fmt.Println("  iloscript 192.0.2.10 -firmware ./A72_1.10.signed.full --target bios")
 	fmt.Println("  iloscript 192.0.2.10 https://192.0.2.20/A72_1.10.signed.full --target bios")
+	fmt.Println("  iloscript 192.0.2.10 -ahs")
+	fmt.Println("  iloscript 192.0.2.10 -ahs -o my_ahs_log.ahs")
 	fmt.Println()
 	fmt.Println("Firmware safety:")
 	fmt.Println("  The client reads UpdateService/FirmwareInventory for bios, ilo, and manual targets.")
