@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -75,6 +76,8 @@ const (
 	maxRetries    = 3
 	retryInterval = 2 * time.Second
 	updateTimeout = 3600
+	httpsAttempts = 5
+	httpsTimeout  = 30 * time.Second
 )
 
 func isValidURL(s string) bool {
@@ -105,6 +108,44 @@ func NewILOClient(iloIP string) (*ILOClient, error) {
 		MaxRetries: maxRetries,
 		RetryDelay: retryInterval,
 	}, nil
+}
+
+// EnsureHTTPSReachable verifies the iLO HTTPS endpoint before attempting login.
+// The root endpoint is used intentionally so Redfish authorization cannot cause
+// a reachable iLO to be treated as unavailable.
+func (c *ILOClient) EnsureHTTPSReachable() bool {
+	baseURL, err := url.Parse(c.BaseURL)
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
+		fmt.Println("Unable to determine iLO HTTPS endpoint.")
+		return false
+	}
+	rootURL := fmt.Sprintf("%s://%s/", baseURL.Scheme, baseURL.Host)
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		for attempt := 1; attempt <= httpsAttempts; attempt++ {
+			req, requestErr := http.NewRequest(http.MethodGet, rootURL, nil)
+			if requestErr == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), httpsTimeout)
+				req = req.WithContext(ctx)
+				resp, requestErr := c.Session.Do(req)
+				cancel()
+				if requestErr == nil {
+					resp.Body.Close()
+					return true
+				}
+				fmt.Printf("HTTPS connection attempt %d/%d failed: %v\n", attempt, httpsAttempts, requestErr)
+			} else {
+				fmt.Printf("HTTPS connection attempt %d/%d failed: %v\n", attempt, httpsAttempts, requestErr)
+			}
+		}
+
+		fmt.Print("Unable to connect to iLO over HTTPS. Continue trying? (y/n): ")
+		answer, readErr := reader.ReadString('\n')
+		if readErr != nil || !strings.EqualFold(strings.TrimSpace(answer), "y") && !strings.EqualFold(strings.TrimSpace(answer), "yes") {
+			return false
+		}
+	}
 }
 
 func (c *ILOClient) Login(username, password string) error {
@@ -277,30 +318,40 @@ func (c *ILOClient) Logout() {
 	}
 }
 
-func (c *ILOClient) FetchSystemModel() {
+func (c *ILOClient) FetchSystemModel() error {
 	url := c.BaseURL + "/Systems/1/"
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("X-Auth-Token", c.Token)
 
 	resp, err := c.Session.Do(req)
 	if err != nil {
-		fmt.Printf("Failed to fetch system info: %v\n", err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 200 {
-		body, _ := ioutil.ReadAll(resp.Body)
-		var data map[string]interface{}
-		if err := json.Unmarshal(body, &data); err == nil {
-			if systemModel, ok := data["Model"]; ok {
-				fmt.Printf("System Model: %s\n", systemModel)
-				return
-			}
-		}
-	} else {
-		fmt.Printf("Failed to fetch system info: %d\n", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	var data struct {
+		Model string `json:"Model"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return err
+	}
+	if data.Model == "" {
+		return fmt.Errorf("model is missing")
+	}
+
+	fmt.Printf("System Model: %s\n", data.Model)
+	return nil
 }
 
 func containsIgnoreCase(s, substr string) bool {
@@ -1795,6 +1846,9 @@ func main() {
 	}
 	client.Verbose = verbose
 	client.InsecureImageTLS = insecureImageTLS
+	if !client.EnsureHTTPSReachable() {
+		return
+	}
 
 	// 從 .env 檔案或環境變量獲取認證信息
 	// godotenv.Load 找不到 .env 檔案時只會回傳錯誤但不影響流程，
@@ -1813,6 +1867,9 @@ func main() {
 		fmt.Printf("Login failed: %v\n", err)
 		os.Exit(1)
 	}
+	if err := client.FetchSystemModel(); err != nil {
+		fmt.Println("Cannot read SUT model name")
+	}
 	defer func() {
 		if client.Token != "" {
 			client.Logout()
@@ -1820,9 +1877,6 @@ func main() {
 	}()
 
 	switch os.Args[2] {
-	case "-model":
-		client.FetchSystemModel()
-
 	case "-iml":
 		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--clear") {
 			if err := client.ClearLog("IML"); err != nil {

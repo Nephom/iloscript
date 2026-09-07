@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 func printHelp() {
-	fmt.Println("iloscript 1.2.2 - HPE iLO Redfish command line client")
+	fmt.Println("iloscript 1.2.9 - HPE iLO Redfish command line client")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  iloscript <ilo_ip> <command> [arguments]")
@@ -14,7 +14,6 @@ func printHelp() {
 	fmt.Println("  -v, --verbose                       Print safe HTTP/task diagnostics to stderr.")
 	fmt.Println()
 	fmt.Println("System and inventory commands:")
-	fmt.Println("  -model                              Show the system model.")
 	fmt.Println("  -ver                                List firmware inventory.")
 	fmt.Println("  -devices                            Hardware report: firmware, storage, CPU, memory, NIC, power supply.")
 	fmt.Println("  -storage                            List storage drives sorted by Port, Box, and Bay.")
