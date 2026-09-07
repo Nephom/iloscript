@@ -655,14 +655,15 @@ func formatIMLGroupLines(groups []imlGroup) []string {
 	var lines []string
 	for _, group := range groups {
 		colorCode := imlSeverityColor(group.Severity)
+		eventTime := formatIMLEventTime(group.Latest)
 
 		switch {
 		case group.Uncertain:
-			lines = append(lines, fmt.Sprintf("%s- %s: %s (Count: %d+...)%s", colorCode, group.Severity, group.Message, group.Count, resetColor))
+			lines = append(lines, fmt.Sprintf("%s- %s %s: %s (Count: %d+...)%s", colorCode, eventTime, group.Severity, group.Message, group.Count, resetColor))
 		case group.Count > 1:
-			lines = append(lines, fmt.Sprintf("%s- %s: %s (Count: %d)%s", colorCode, group.Severity, group.Message, group.Count, resetColor))
+			lines = append(lines, fmt.Sprintf("%s- %s %s: %s (Count: %d)%s", colorCode, eventTime, group.Severity, group.Message, group.Count, resetColor))
 		default:
-			lines = append(lines, fmt.Sprintf("%s- %s: %s%s", colorCode, group.Severity, group.Message, resetColor))
+			lines = append(lines, fmt.Sprintf("%s- %s %s: %s%s", colorCode, eventTime, group.Severity, group.Message, resetColor))
 		}
 	}
 
