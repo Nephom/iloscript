@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // FetchDevices produces an lshw-style hardware report made up of several
@@ -15,6 +17,8 @@ import (
 // warning and does not prevent the remaining sections from running.
 func (c *ILOClient) FetchDevices() error {
 	ctx := context.Background()
+	stopSpinner := startInventorySpinner("Fetching devices")
+	defer stopSpinner()
 
 	fmt.Println("##### Firmware Inventory #####")
 	if err := c.FetchFirmwareInventory(); err != nil {
@@ -54,6 +58,40 @@ func (c *ILOClient) FetchDevices() error {
 	}
 
 	return nil
+}
+
+// startInventorySpinner shows progress only when stderr is an interactive
+// terminal, so redirected device reports remain clean and machine-readable.
+func startInventorySpinner(label string) func() {
+	info, err := os.Stderr.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return func() {}
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		frames := []string{"|", "/", "-", "\\"}
+		ticker := time.NewTicker(120 * time.Millisecond)
+		defer ticker.Stop()
+		frame := 0
+		for {
+			select {
+			case <-ticker.C:
+				fmt.Fprintf(os.Stderr, "\r%s %s", label, frames[frame])
+				frame = (frame + 1) % len(frames)
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	return func() {
+		close(stop)
+		<-done
+		fmt.Fprint(os.Stderr, "\r\033[2K")
+	}
 }
 
 // ---------------------------------------------------------------------------

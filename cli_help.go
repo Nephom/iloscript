@@ -16,6 +16,7 @@ func printHelp() {
 	fmt.Println("System and inventory commands:")
 	fmt.Println("  -ver                                List firmware inventory.")
 	fmt.Println("  -devices                            Hardware report: firmware, storage, CPU, memory, NIC, power supply.")
+	fmt.Println("  -devices --output                   Hardware report and write the inventory JSON file.")
 	fmt.Println("  -storage                            List storage drives sorted by Port, Box, and Bay.")
 	fmt.Println("  -storage --bay                      Sort storage drives by Box, then Bay.")
 	fmt.Println("  -storage --led                      Light each drive location indicator for 20 seconds.")

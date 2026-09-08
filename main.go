@@ -22,6 +22,7 @@ import (
 
 type ILOClient struct {
 	BaseURL          string
+	Model            string
 	Token            string
 	Session          *http.Client
 	MaxRetries       int
@@ -350,6 +351,7 @@ func (c *ILOClient) FetchSystemModel() error {
 		return fmt.Errorf("model is missing")
 	}
 
+	c.Model = data.Model
 	fmt.Printf("System Model: %s\n", data.Model)
 	return nil
 }
@@ -2059,7 +2061,20 @@ func main() {
 		}
 
 	case "-devices":
-		if err := client.FetchDevices(); err != nil {
+		writeJSON := false
+		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--output") {
+			writeJSON = true
+		} else if len(os.Args) != 3 {
+			fmt.Println("Usage: <ilo_ip> -devices [--output]")
+			os.Exit(1)
+		}
+		if writeJSON {
+			if path, err := client.writeDevicesOutputJSON(""); err != nil {
+				fmt.Printf("Warning: failed to write devices JSON: %v\n", err)
+			} else {
+				fmt.Printf("Generated file: %s\n", path)
+			}
+		} else if err := client.FetchDevices(); err != nil {
 			fmt.Printf("Devices get failed: %v\n", err)
 			os.Exit(1)
 		}
