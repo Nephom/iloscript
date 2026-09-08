@@ -57,6 +57,14 @@ func (c *ILOClient) FetchDevices() error {
 		fmt.Println(friendlySectionError(err))
 	}
 
+	fmt.Println()
+	fmt.Println("##### Chassis Hardware #####")
+	if chassis, err := c.fetchChassisInventory(ctx); err != nil {
+		fmt.Println(friendlySectionError(err))
+	} else {
+		printChassisInventory(chassis)
+	}
+
 	return nil
 }
 

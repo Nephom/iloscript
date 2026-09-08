@@ -12,9 +12,7 @@ import (
 	"time"
 )
 
-// devicesOutput mirrors the on-disk report shape of 2026818.json exactly:
-// a top-level object with a header row, a null footer, and a body of
-// [", Tag, Info"] rows.
+// devicesOutput preserves the existing header/footer/body report shape.
 type devicesOutput struct {
 	Header []string    `json:"header"`
 	Footer interface{} `json:"footer"`
@@ -29,7 +27,7 @@ var devicesOutputLabels = []string{
 	"Processor/CPU",
 	"DIMM (NVDIMM)",
 	"Options",
-	"Backplane",
+	"BP",
 	"Drives",
 	"TPM",
 	"PSU",
@@ -350,13 +348,14 @@ func (c *ILOClient) collectDevicesOutput() (*devicesOutput, error) {
 	drives, _ := c.collectDrives(ctx)
 	psus, _ := c.collectPowerSupplies(ctx)
 	nics, _ := c.collectNICs(ctx)
+	chassis, _ := c.fetchChassisInventory(ctx)
 
 	values := make(map[string]string, len(devicesOutputLabels)+2)
 	values["Board"] = board
 	values["Processor/CPU"] = joinValues(countValues(processors))
 	values["DIMM (NVDIMM)"] = joinValues(countValues(memory))
 	values["Options"] = na
-	values["Backplane"] = na
+	values["BP"] = na
 	values["Drives"] = joinValues(countValues(drives))
 	values["TPM"] = na
 	values["PSU"] = joinValues(countValues(psus))
@@ -383,6 +382,20 @@ func (c *ILOClient) collectDevicesOutput() (*devicesOutput, error) {
 	for _, label := range devicesOutputLabels {
 		if label == "Power PIC" && len(secondaryVersions) > 0 {
 			out.Body = append(out.Body, []string{"", "SecondaryCPLD", joinValues(countValues(secondaryVersions))})
+		}
+		if label == "BP" {
+			rows := compactBackplaneRows(chassis)
+			if len(rows) > 0 {
+				out.Body = append(out.Body, rows...)
+				continue
+			}
+		}
+		if label == "Drives" {
+			rows := compactDriveRows(chassis)
+			if len(rows) > 0 {
+				out.Body = append(out.Body, rows...)
+				continue
+			}
 		}
 		out.Body = append(out.Body, []string{"", label, values[label]})
 	}
