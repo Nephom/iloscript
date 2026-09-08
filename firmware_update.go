@@ -12,6 +12,9 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -42,21 +45,26 @@ type FirmwareUpdateInfo struct {
 	RestoreRemoteServerCertificate *bool
 }
 
-func parseFirmwareArguments(arguments []string) (string, string, string, error) {
+const (
+	imlVerificationTimeout = 2 * time.Minute
+	imlTimeWindow          = 5 * time.Minute
+	imlPollInterval        = 5 * time.Second
+)
+
+func parseFirmwareArguments(arguments []string) ([]string, string, error) {
 	if len(arguments) == 0 {
-		return "", "", "", fmt.Errorf("firmware source is required")
+		return nil, "", fmt.Errorf("firmware source is required")
 	}
-	source := arguments[0]
-	matchText := "None"
-	targetKind := "bios"
-	for index := 1; index < len(arguments); index++ {
+	var sources []string
+	targetKind := "auto"
+	for index := 0; index < len(arguments); index++ {
 		argument := arguments[index]
 		if argument == "-v" || argument == "--verbose" || argument == "--i" {
 			continue
 		}
 		if argument == "--target" {
 			if index+1 >= len(arguments) {
-				return "", "", "", fmt.Errorf("--target requires auto, bios, ilo, or manual")
+				return nil, "", fmt.Errorf("--target requires auto, bios, ilo, or manual")
 			}
 			targetKind = strings.ToLower(arguments[index+1])
 			index++
@@ -66,16 +74,219 @@ func parseFirmwareArguments(arguments []string) (string, string, string, error) 
 			targetKind = strings.ToLower(strings.TrimPrefix(argument, "--target="))
 			continue
 		}
-		if matchText == "None" {
-			matchText = argument
-			continue
-		}
-		return "", "", "", fmt.Errorf("unexpected firmware argument %q", argument)
+		sources = append(sources, argument)
+	}
+	if len(sources) == 0 {
+		return nil, "", fmt.Errorf("firmware source is required")
 	}
 	if targetKind != "auto" && targetKind != "bios" && targetKind != "ilo" && targetKind != "manual" {
-		return "", "", "", fmt.Errorf("invalid firmware target %q; use auto, bios, ilo, or manual", targetKind)
+		return nil, "", fmt.Errorf("invalid firmware target %q; use auto, bios, ilo, or manual", targetKind)
 	}
-	return source, matchText, targetKind, nil
+	return sources, targetKind, nil
+}
+
+func firmwareFilesInFolder(folder string) ([]string, error) {
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		return nil, fmt.Errorf("read firmware folder: %w", err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, filepath.Join(folder, entry.Name()))
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("firmware folder %q is empty", folder)
+	}
+	return paths, nil
+}
+
+func selectFirmwareOrder(files []string, input io.Reader, output io.Writer) ([]string, []string, error) {
+	if len(files) == 0 {
+		return nil, nil, fmt.Errorf("no firmware files found")
+	}
+	remaining := make(map[int]bool, len(files))
+	for index := range files {
+		remaining[index] = true
+	}
+	var selected []string
+	var skipped []string
+	reader := bufio.NewScanner(input)
+	for len(remaining) > 0 {
+		fmt.Fprintln(output, "\nRemaining firmware files:")
+		indices := make([]int, 0, len(remaining))
+		for index := range remaining {
+			indices = append(indices, index)
+		}
+		sort.Ints(indices)
+		for _, index := range indices {
+			fmt.Fprintf(output, "  [%d] %s\n", index+1, files[index])
+		}
+		fmt.Fprintln(output, "Enter a number to select, x <number> to skip, or q to cancel:")
+		if !reader.Scan() {
+			return nil, nil, fmt.Errorf("read firmware selection: %w", reader.Err())
+		}
+		answer := strings.Fields(strings.TrimSpace(reader.Text()))
+		if len(answer) == 0 {
+			fmt.Fprintln(output, "Please select or skip every firmware file before continuing.")
+			continue
+		}
+		if strings.EqualFold(answer[0], "q") {
+			return nil, nil, fmt.Errorf("firmware selection cancelled")
+		}
+		skip := strings.EqualFold(answer[0], "x")
+		if skip {
+			if len(answer) != 2 {
+				fmt.Fprintln(output, "Use x <number> to skip a firmware file.")
+				continue
+			}
+			answer = answer[1:]
+		} else if len(answer) != 1 {
+			fmt.Fprintln(output, "Enter one file number at a time.")
+			continue
+		}
+		index, err := strconv.Atoi(answer[0])
+		if err != nil || index < 1 || index > len(files) || !remaining[index-1] {
+			fmt.Fprintln(output, "That file number is not available.")
+			continue
+		}
+		delete(remaining, index-1)
+		if skip {
+			skipped = append(skipped, files[index-1])
+		} else {
+			selected = append(selected, files[index-1])
+		}
+	}
+	fmt.Fprintln(output, "\nFirmware selection complete.")
+	return selected, skipped, nil
+}
+
+type firmwareFlashResult struct {
+	Path    string
+	Status  string
+	Message string
+}
+
+func parseIMLTime(value string) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.000000-07:00", "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported IML timestamp %q", value)
+}
+
+func (c *ILOClient) latestIMLID(ctx context.Context) (int, error) {
+	members, _, _, err := c.fetchIMLEntries(1, "", "")
+	if err != nil {
+		return 0, err
+	}
+	if len(members) == 0 {
+		return 0, nil
+	}
+	return members[0].ID, nil
+}
+
+func (c *ILOClient) verifyFirmwareFlashIML(ctx context.Context, baselineID int, started time.Time) (imlEvent, error) {
+	deadline := time.NewTimer(imlVerificationTimeout)
+	defer deadline.Stop()
+	for {
+		members, _, _, err := c.fetchIMLEntries(20, "flash", "")
+		if err == nil {
+			for _, member := range members {
+				if member.ID <= baselineID || !strings.Contains(strings.ToLower(member.Message), "flash") {
+					continue
+				}
+				if member.Created != "" {
+					created, parseErr := parseIMLTime(member.Created)
+					if parseErr != nil || created.Before(started.Add(-imlTimeWindow)) || created.After(time.Now().Add(imlTimeWindow)) {
+						continue
+					}
+				}
+				return member, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return imlEvent{}, ctx.Err()
+		case <-deadline.C:
+			return imlEvent{}, fmt.Errorf("no new IML message containing %q was found", "flash")
+		case <-time.After(imlPollInterval):
+		}
+	}
+}
+
+func (c *ILOClient) flashFirmwareBatch(ctx context.Context, files []string, targetKind string) ([]firmwareFlashResult, error) {
+	results := make([]firmwareFlashResult, 0, len(files))
+	for _, path := range files {
+		fmt.Printf("\n=== Flashing %s ===\n", path)
+		baselineID, baselineErr := c.latestIMLID(ctx)
+		if baselineErr != nil {
+			results = append(results, firmwareFlashResult{Path: path, Status: "FAIL", Message: baselineErr.Error()})
+			return results, fmt.Errorf("read IML baseline before %s: %w", path, baselineErr)
+		}
+		started := time.Now()
+		info, err := c.UpdateFirmwareImageWithTarget(ctx, path, targetKind)
+		if err != nil {
+			results = append(results, firmwareFlashResult{Path: path, Status: "FAIL", Message: err.Error()})
+			return results, fmt.Errorf("%s: %w", path, err)
+		}
+		restore := func() {
+			if info.RestoreRemoteServerCertificate != nil {
+				if restoreErr := c.RestoreFirmwareUpdateSettings(context.Background(), info); restoreErr != nil {
+					fmt.Printf("Warning: failed to restore remote certificate verification: %v\n", restoreErr)
+				}
+				info.RestoreRemoteServerCertificate = nil
+			}
+		}
+		if info.TaskURI != "" {
+			err = c.MonitorUpdate(info.TaskURI, "flash", info.TargetKind, updateTimeout)
+		} else {
+			err = c.MonitorUpdateService(ctx, updateTimeout)
+		}
+		if err == nil && info.TargetURI != "" {
+			err = c.WaitForFirmwareTarget(ctx, info, time.Duration(updateTimeout)*time.Second)
+		}
+		if err != nil {
+			restore()
+			results = append(results, firmwareFlashResult{Path: path, Status: "FAIL", Message: err.Error()})
+			return results, fmt.Errorf("%s: %w", path, err)
+		}
+		restore()
+
+		result := firmwareFlashResult{Path: path, Status: "PASS", Message: "firmware update and verification completed"}
+		if event, imlErr := c.verifyFirmwareFlashIML(ctx, baselineID, started); imlErr != nil {
+			result.Status = "WARNING"
+			result.Message = imlErr.Error()
+			fmt.Printf("WARNING: %s\n", result.Message)
+		} else {
+			fmt.Printf("IML flash event verified: %s\n", event.Message)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func printFirmwareSummary(results []firmwareFlashResult) {
+	fmt.Println("\nFirmware Flash Summary")
+	fmt.Println("======================")
+	for _, result := range results {
+		fmt.Printf("%-8s %s: %s\n", result.Status, result.Path, result.Message)
+	}
+	pass, warning, failed, skipped := 0, 0, 0, 0
+	for _, result := range results {
+		switch result.Status {
+		case "PASS":
+			pass++
+		case "WARNING":
+			warning++
+		case "FAIL":
+			failed++
+		case "SKIPPED":
+			skipped++
+		}
+	}
+	fmt.Printf("\nResult: %d passed, %d warning, %d failed, %d skipped\n", pass, warning, failed, skipped)
 }
 
 func (c *ILOClient) resolveURI(resourceURI string) string {

@@ -2019,39 +2019,45 @@ func main() {
 		}
 	case "-firmware":
 		if len(os.Args) < 4 {
-			fmt.Println("Usage: <ilo_ip> -firmware <image_path> [match_text] [--target auto|bios|ilo|manual]")
+			fmt.Println("Usage: <ilo_ip> -firmware <image_path>... [--target auto|bios|ilo|manual]")
 			os.Exit(1)
 		}
-		imagePath, matchText, targetKind, argumentErr := parseFirmwareArguments(os.Args[3:])
+		sources, targetKind, argumentErr := parseFirmwareArguments(os.Args[3:])
 		if argumentErr != nil {
 			fmt.Printf("Firmware argument error: %v\n", argumentErr)
 			os.Exit(1)
 		}
-		ctx, cancel := monitorContext()
-		defer cancel()
-		updateInfo, updateErr := client.UpdateFirmwareImageWithTarget(ctx, imagePath, targetKind)
-		if updateErr != nil {
-			fmt.Printf("Firmware upload failed: %v\n", updateErr)
+		var files []string
+		var skippedFiles []string
+		if len(sources) == 1 {
+			if info, statErr := os.Stat(sources[0]); statErr == nil && info.IsDir() {
+				files, argumentErr = firmwareFilesInFolder(sources[0])
+				if argumentErr == nil {
+					files, skippedFiles, argumentErr = selectFirmwareOrder(files, os.Stdin, os.Stdout)
+				}
+			} else {
+				files = sources
+			}
+		} else {
+			files = sources
+		}
+		if argumentErr != nil {
+			fmt.Printf("Firmware selection error: %v\n", argumentErr)
 			os.Exit(1)
 		}
-		restoreFirmwareSettings := func() {
-			if updateInfo.RestoreRemoteServerCertificate != nil {
-				if restoreErr := client.RestoreFirmwareUpdateSettings(context.Background(), updateInfo); restoreErr != nil {
-					fmt.Printf("Warning: failed to restore remote certificate verification: %v\n", restoreErr)
-				}
-				updateInfo.RestoreRemoteServerCertificate = nil
-			}
+		ctx, cancel := monitorContext()
+		defer cancel()
+		results, flashErr := client.flashFirmwareBatch(ctx, files, targetKind)
+		for _, path := range skippedFiles {
+			results = append(results, firmwareFlashResult{Path: path, Status: "SKIPPED", Message: "excluded during interactive selection"})
 		}
-		defer restoreFirmwareSettings()
-		if updateInfo.TaskURI != "" {
-			if monitorErr := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateInfo.TargetKind, updateTimeout); monitorErr != nil {
-				fmt.Printf("Firmware monitoring failed: %v\n", monitorErr)
-				restoreFirmwareSettings()
-				os.Exit(1)
-			}
-		} else if monitorErr := client.MonitorUpdateService(ctx, updateTimeout); monitorErr != nil {
-			fmt.Printf("Firmware monitoring failed: %v\n", monitorErr)
-			restoreFirmwareSettings()
+		printFirmwareSummary(results)
+		if len(files) == 0 && flashErr == nil {
+			fmt.Println("No firmware files selected; nothing to flash.")
+			return
+		}
+		if flashErr != nil {
+			fmt.Printf("Firmware batch stopped: %v\n", flashErr)
 			os.Exit(1)
 		}
 	case "-ver":
@@ -2208,11 +2214,16 @@ func main() {
 				os.Exit(1)
 			}
 
-			firmwareURL, matchText, targetKind, argumentErr := parseFirmwareArguments(os.Args[2:])
+			sources, targetKind, argumentErr := parseFirmwareArguments(os.Args[2:])
 			if argumentErr != nil {
 				fmt.Printf("Firmware argument error: %v\n", argumentErr)
 				os.Exit(1)
 			}
+			if len(sources) != 1 || !isValidURL(sources[0]) {
+				fmt.Println("Remote firmware mode accepts exactly one HTTPS firmware URL.")
+				os.Exit(1)
+			}
+			firmwareURL = sources[0]
 
 			ctx, cancel := monitorContext()
 			defer cancel()
@@ -2232,13 +2243,13 @@ func main() {
 			defer restoreFirmwareSettings()
 
 			if updateInfo.TaskURI != "" {
-				if err := client.MonitorUpdate(updateInfo.TaskURI, matchText, updateInfo.TargetKind, updateTimeout); err != nil {
+				if err := client.MonitorUpdate(updateInfo.TaskURI, "flash", updateInfo.TargetKind, updateTimeout); err != nil {
 					fmt.Printf("Monitoring failed: %v\n", err)
 					restoreFirmwareSettings()
 					os.Exit(1)
 				}
 			}
-			if waitErr := client.WaitForFirmwareTarget(ctx, updateInfo, updateTimeout); waitErr != nil {
+			if waitErr := client.WaitForFirmwareTarget(ctx, updateInfo, time.Duration(updateTimeout)*time.Second); waitErr != nil {
 				fmt.Printf("Firmware verification failed: %v\n", waitErr)
 				restoreFirmwareSettings()
 				os.Exit(1)
