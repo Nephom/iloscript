@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 func printHelp() {
-	fmt.Println("iloscript 1.2.19 - HPE iLO Redfish command line client")
+	fmt.Println("iloscript 1.2.21 - HPE iLO Redfish command line client")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  iloscript <ilo_ip> <command> [arguments]")
@@ -69,6 +69,8 @@ func printHelp() {
 	fmt.Println("  -bios setup                          Boot into BIOS setup.")
 	fmt.Println("  -bios reset                          Restore BIOS defaults and power on.")
 	fmt.Println("  -bios patch <attribute> <value>      Change one BIOS attribute.")
+	fmt.Println()
+	fmt.Println("iLO reset commands:")
 	fmt.Println("  -reset                               Clear logs and reset iLO.")
 	fmt.Println()
 	fmt.Println("Examples:")
