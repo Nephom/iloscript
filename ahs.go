@@ -22,9 +22,9 @@ func (c *ILOClient) FetchAHSLocation(ctx context.Context) (map[string]string, er
 
 	var data struct {
 		Links struct {
-			AHSLocation map[string]string `json:"AHSLocation"`
-			RecentWeek  map[string]string `json:"RecentWeek"`
-			InfoSight   map[string]string `json:"InfoSight"`
+			AHSLocation   map[string]string `json:"AHSLocation"`
+			RecentWeek    map[string]string `json:"RecentWeek"`
+			InfoSight     map[string]string `json:"InfoSight"`
 			OneDaySlimAHS map[string]string `json:"OneDaySlimAHS"`
 		} `json:"Links"`
 	}
@@ -99,7 +99,7 @@ func (c *ILOClient) DownloadAHS(ctx context.Context, outputFile string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("AHS download failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("AHS download failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	out, err := os.Create(outputFile)

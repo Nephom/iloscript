@@ -205,7 +205,7 @@ func (c *ILOClient) Login(username, password string) error {
 	if err != nil {
 		return fmt.Errorf("login failed with status %d, couldn't read response: %v", resp.StatusCode, err)
 	}
-	return fmt.Errorf("login failed with status %d: %s", resp.StatusCode, string(body))
+	return fmt.Errorf("login failed: %s", formatRedfishError(resp.StatusCode, body))
 }
 
 func (c *ILOClient) Logout() {
@@ -237,7 +237,7 @@ func (c *ILOClient) Logout() {
 			fmt.Println("Logout successful!")
 		} else {
 			body, _ := io.ReadAll(deleteResp.Body)
-			fmt.Printf("Failed to logout, status: %d, response: %s\n", deleteResp.StatusCode, strings.TrimSpace(string(body)))
+			fmt.Printf("Failed to logout: %s\n", formatRedfishError(deleteResp.StatusCode, body))
 		}
 		return
 	}
@@ -261,9 +261,8 @@ func (c *ILOClient) Logout() {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Failed to fetch session list, status: %d\n", resp.StatusCode)
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Printf("Response: %s\n", string(body))
+		fmt.Printf("Failed to fetch session list: %s\n", formatRedfishError(resp.StatusCode, body))
 		return
 	}
 
@@ -327,9 +326,8 @@ func (c *ILOClient) Logout() {
 	if deleteResp.StatusCode == 200 {
 		fmt.Println("Logout successful!")
 	} else {
-		fmt.Printf("Failed to logout, status: %d\n", deleteResp.StatusCode)
 		body, _ := io.ReadAll(deleteResp.Body)
-		fmt.Printf("Response: %s\n", string(body))
+		fmt.Printf("Failed to logout: %s\n", formatRedfishError(deleteResp.StatusCode, body))
 	}
 }
 
@@ -348,7 +346,8 @@ func (c *ILOClient) FetchSystemModel() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("fetch system model failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -404,7 +403,8 @@ func (c *ILOClient) FetchOemHpeData() (*OemHpeData, error) {
 
 	// 檢查 HTTP 狀態碼
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("請求失敗，狀態碼: %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("請求失敗: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	// 讀取回應資料
@@ -515,7 +515,11 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 	defer resp.Body.Close()
 
 	body, _ := ioutil.ReadAll(resp.Body)
-	c.debugf("GET task URI %s -> HTTP %d; response=%s", url, resp.StatusCode, truncateDebugBody(body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.debugf("GET task URI %s -> %s", url, formatRedfishError(resp.StatusCode, body))
+	} else {
+		c.debugf("GET task URI %s -> HTTP %d", url, resp.StatusCode)
+	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		if strings.Contains(string(body), "iLO.2.44.UpdateBadParameter") {
@@ -534,7 +538,7 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 			}
 			return state, oemData.FlashProgressPercent, nil
 		}
-		return "Error", 0, fmt.Errorf("unexpected TaskService status code: %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "Error", 0, fmt.Errorf("unexpected TaskService response: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	// 解析 /TaskService/ 返回數據
@@ -768,7 +772,8 @@ func (c *ILOClient) fetchIMLEntries(count int, matchText string, severityFilter 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, 0, false, fmt.Errorf("unexpected status code while fetching IML events count: %d", resp.StatusCode)
+		body, _ := ioutil.ReadAll(resp.Body)
+		return nil, 0, false, fmt.Errorf("fetching IML events count failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -1009,7 +1014,7 @@ func (c *ILOClient) PowerControl(action string) error {
 
 	if resp.StatusCode != 200 {
 		body, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("power control failed with status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("power control failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	fmt.Printf("Power %s command sent successfully\n", action)
@@ -1038,7 +1043,8 @@ func (c *ILOClient) FetchFirmwareInventory() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("unexpected status code while fetching firmware inventory count: %d", resp.StatusCode)
+		body, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("fetching firmware inventory count failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -1081,7 +1087,8 @@ func (c *ILOClient) FetchFirmwareInventory() error {
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
-			fmt.Printf("Unexpected status code for firmware inventory item %d: %d\n", i, resp.StatusCode)
+			body, _ := ioutil.ReadAll(resp.Body)
+			fmt.Printf("Failed to fetch firmware inventory item %d: %s\n", i, formatRedfishError(resp.StatusCode, body))
 			continue
 		}
 
@@ -1150,7 +1157,8 @@ func (c *ILOClient) FetchChaissDevices() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("unexpected status code while fetching firmware inventory count: %d", resp.StatusCode)
+		body, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("fetching firmware inventory count failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -1191,7 +1199,8 @@ func (c *ILOClient) FetchChaissDevices() error {
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
-			fmt.Printf("Unexpected status code for firmware inventory item %d: %d\n", i, resp.StatusCode)
+			body, _ := ioutil.ReadAll(resp.Body)
+			fmt.Printf("Failed to fetch firmware inventory item %d: %s\n", i, formatRedfishError(resp.StatusCode, body))
 			continue
 		}
 
@@ -1258,7 +1267,8 @@ func (c *ILOClient) FetchEventLogs() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("unexpected status code while fetching event logs count: %d", resp.StatusCode)
+		body, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("fetching event logs count failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -1403,7 +1413,7 @@ func (c *ILOClient) GetBIOSSettings() (map[string]interface{}, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := ioutil.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get BIOS settings failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("get BIOS settings failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	var biosSettings map[string]interface{}
@@ -1474,7 +1484,7 @@ func (c *ILOClient) PatchBIOSSetting(attrName, attrValue string) error {
 
 	if resp.StatusCode != 200 {
 		respBody, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("patch BIOS settings failed with status %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("patch BIOS settings failed: %s", formatRedfishError(resp.StatusCode, respBody))
 	}
 
 	fmt.Printf("BIOS setting %s updated to %s successfully\n", attrName, attrValue)
@@ -1518,7 +1528,7 @@ func (c *ILOClient) PostBIOSSetting() error {
 	// Check for successful response status
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("post BIOS settings failed with status %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("post BIOS settings failed: %s", formatRedfishError(resp.StatusCode, respBody))
 	}
 
 	fmt.Println("BIOS setting BootSourceOverrideTarget updated to BiosSetup successfully")
@@ -1551,7 +1561,7 @@ func (c *ILOClient) ResetBIOS() error {
 	// Check for successful response status
 	if resetResp.StatusCode != http.StatusOK && resetResp.StatusCode != http.StatusAccepted {
 		respBody, _ := ioutil.ReadAll(resetResp.Body)
-		return fmt.Errorf("BIOS reset failed with status %d: %s", resetResp.StatusCode, string(respBody))
+		return fmt.Errorf("BIOS reset failed: %s", formatRedfishError(resetResp.StatusCode, respBody))
 	}
 
 	fmt.Println("Done, check with your IRC to see SUT power-on")
@@ -1592,7 +1602,7 @@ func (c *ILOClient) ResetBIOS() error {
 	// Check for successful response status
 	if powerResp.StatusCode != http.StatusOK && powerResp.StatusCode != http.StatusAccepted {
 		respBody, _ := ioutil.ReadAll(powerResp.Body)
-		return fmt.Errorf("power button action failed with status %d: %s", powerResp.StatusCode, string(respBody))
+		return fmt.Errorf("power button action failed: %s", formatRedfishError(powerResp.StatusCode, respBody))
 	}
 
 	fmt.Println("Power button pressed successfully")
@@ -1656,7 +1666,7 @@ func (c *ILOClient) ClearLogsAndReset() error {
 
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 			body, _ := ioutil.ReadAll(resp.Body)
-			return fmt.Errorf("%s failed with status %d: %s", label, resp.StatusCode, strings.TrimSpace(string(body)))
+			return fmt.Errorf("%s failed: %s", label, formatRedfishError(resp.StatusCode, body))
 		}
 
 		fmt.Printf("%s completed.\n", label)
@@ -1712,7 +1722,7 @@ func (c *ILOClient) ClearLog(logService string) error {
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		body, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("%s clear failed with status %d: %s", logService, resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("%s clear failed: %s", logService, formatRedfishError(resp.StatusCode, body))
 	}
 
 	fmt.Printf("%s cleared successfully.\n", strings.ToUpper(logService))
@@ -1740,7 +1750,8 @@ func (c *ILOClient) FetchSensorData() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("unexpected status code while fetching sensors count: %d", resp.StatusCode)
+		body, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("fetching sensors count failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)

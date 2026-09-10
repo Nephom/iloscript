@@ -261,7 +261,7 @@ func (c *ILOClient) setDriveLocationIndicator(ctx context.Context, drive storage
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("set LocationIndicatorActive=%t failed with HTTP %d: %s", active, resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("set LocationIndicatorActive=%t failed: %s", active, formatRedfishError(resp.StatusCode, body))
 	}
 	return nil
 }

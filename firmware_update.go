@@ -560,9 +560,9 @@ func (c *ILOClient) SetRemoteServerCertificateVerification(ctx context.Context, 
 	}
 	defer resp.Body.Close()
 	responseBody, _ := io.ReadAll(resp.Body)
-	c.debugf("PATCH UpdateService -> HTTP %d; response=%s", resp.StatusCode, truncateDebugBody(responseBody))
+	c.debugf("PATCH UpdateService -> %s", formatRedfishError(resp.StatusCode, responseBody))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("set VerifyRemoteServerCertificate=%t failed with HTTP %d: %s", enabled, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return fmt.Errorf("set VerifyRemoteServerCertificate=%t failed: %s", enabled, formatRedfishError(resp.StatusCode, responseBody))
 	}
 	return nil
 }
@@ -634,9 +634,9 @@ func (c *ILOClient) UpdateFirmwareWithTarget(ctx context.Context, firmwareURL, r
 	}
 	defer resp.Body.Close()
 	responseBody, _ := io.ReadAll(resp.Body)
-	c.debugf("POST SimpleUpdate -> HTTP %d Location=%q Content-Location=%q response=%s", resp.StatusCode, resp.Header.Get("Location"), resp.Header.Get("Content-Location"), truncateDebugBody(responseBody))
+	c.debugf("POST SimpleUpdate -> HTTP %d Location=%q Content-Location=%q", resp.StatusCode, resp.Header.Get("Location"), resp.Header.Get("Content-Location"))
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		return FirmwareUpdateInfo{}, fmt.Errorf("firmware update failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return FirmwareUpdateInfo{}, fmt.Errorf("firmware update failed: %s", formatRedfishError(resp.StatusCode, responseBody))
 	}
 	taskURI := taskURIFromResponse(resp)
 	if taskURI == "" && len(responseBody) > 0 {
@@ -928,9 +928,9 @@ func (c *ILOClient) UploadFirmwareMultipartWithTarget(ctx context.Context, image
 	}
 	defer resp.Body.Close()
 	responseBody, _ := io.ReadAll(resp.Body)
-	c.debugf("POST multipart firmware -> HTTP %d Location=%q Content-Location=%q response=%s", resp.StatusCode, resp.Header.Get("Location"), resp.Header.Get("Content-Location"), truncateDebugBody(responseBody))
+	c.debugf("POST multipart firmware -> HTTP %d Location=%q Content-Location=%q", resp.StatusCode, resp.Header.Get("Location"), resp.Header.Get("Content-Location"))
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("multipart firmware update failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return "", fmt.Errorf("multipart firmware update failed: %s", formatRedfishError(resp.StatusCode, responseBody))
 	}
 	if taskURI := taskURIFromResponse(resp); taskURI != "" {
 		return taskURI, nil

@@ -48,6 +48,7 @@ func (c *ILOClient) fetchChassisInventory(ctx context.Context) (*chassisInventor
 			collectionURI := strings.TrimRight(chassisURI, "/") + "/" + resource.name
 			members, collectionErr := c.fetchCollectionMemberURIs(ctx, collectionURI)
 			if collectionErr != nil {
+				fmt.Printf("Warning: %s unavailable for chassis %s: %v\n", resource.name, chassisID, collectionErr)
 				continue
 			}
 			for _, memberURI := range members {

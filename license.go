@@ -118,7 +118,7 @@ func (c *ILOClient) installLicense(ctx context.Context, filename string) error {
 	}
 	c.debugf("POST %s -> HTTP %d", request.URL.String(), response.StatusCode)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("install license failed with HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+		return fmt.Errorf("install license failed: %s", formatRedfishError(response.StatusCode, responseBody))
 	}
 
 	fmt.Println("iLO license installed successfully.")

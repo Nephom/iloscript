@@ -121,7 +121,7 @@ func (c *ILOClient) postPowerAction(ctx context.Context, target string, payload 
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("power action failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("power action failed: %s", formatRedfishError(resp.StatusCode, body))
 	}
 	return nil
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -227,27 +226,11 @@ func isAbsent(state string) bool {
 	return strings.EqualFold(state, "Absent")
 }
 
-// httpStatusPattern extracts the HTTP status code from getJSON's error text
-// ("request returned HTTP %d: %s"), without requiring any signature changes
-// to getJSON or its callers in storage.go/session_monitor.go.
-var httpStatusPattern = regexp.MustCompile(`HTTP (\d{3})`)
-
-// friendlySectionError turns a "this resource is not advertised/supported"
-// style HTTP error (400/404/405/501) into a short, user-facing message
-// instead of dumping the raw Go/HTTP error text. Any other failure (network,
-// timeout, 5xx, etc.) is still reported with detail since those need
-// investigation.
+// friendlySectionError keeps section failures short while preserving the
+// status, Redfish error code, and Redfish message from the shared formatter.
 func friendlySectionError(err error) string {
 	if err == nil {
 		return ""
-	}
-	if match := httpStatusPattern.FindStringSubmatch(err.Error()); match != nil {
-		if code, convErr := strconv.Atoi(match[1]); convErr == nil {
-			switch code {
-			case 400, 404, 405, 501:
-				return "目前沒有找到這個資源"
-			}
-		}
 	}
 	return fmt.Sprintf("讀取失敗: %v", err)
 }
