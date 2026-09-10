@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 func printHelp() {
-	fmt.Println("iloscript 1.2.18 - HPE iLO Redfish command line client")
+	fmt.Println("iloscript 1.2.19 - HPE iLO Redfish command line client")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  iloscript <ilo_ip> <command> [arguments]")
@@ -24,6 +24,13 @@ func printHelp() {
 	fmt.Println("  -sensors                            List chassis sensor readings.")
 	fmt.Println("  -iel                                Show server EventLog entries.")
 	fmt.Println("  -iel --clear                        Clear only the IEL entries.")
+	fmt.Println()
+	fmt.Println("License commands:")
+	fmt.Println("  -license --read                     Read the currently installed iLO license.")
+	fmt.Println("  -license --file <filename>          Install or update the license from a text file.")
+	fmt.Println("  -license --read --file <filename>  Read the license, then install from the file.")
+	fmt.Println("  License file format:                One license key on a single line, for example:")
+	fmt.Println("                                      XXXXX-XXXXX-XXXXX-XXXXX-XXXXX")
 	fmt.Println()
 	fmt.Println("AHS commands:")
 	fmt.Println("  -ahs [-o <output_file>]              Download the full AHS log (downloadAll).")
@@ -73,6 +80,8 @@ func printHelp() {
 	fmt.Println("  iloscript 192.0.2.10 https://192.0.2.20/A72_1.10.signed.full")
 	fmt.Println("  iloscript 192.0.2.10 -ahs")
 	fmt.Println("  iloscript 192.0.2.10 -ahs -o my_ahs_log.ahs")
+	fmt.Println("  iloscript 192.0.2.10 -license --read")
+	fmt.Println("  iloscript 192.0.2.10 -license --file ilo-license.txt")
 	fmt.Println()
 	fmt.Println("Firmware safety:")
 	fmt.Println("  Each local image is flashed only after the previous image completes and verifies.")

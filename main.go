@@ -1902,6 +1902,11 @@ func main() {
 	}()
 
 	switch os.Args[2] {
+	case "-license":
+		if err := client.runLicenseCommand(os.Args[3:]); err != nil {
+			fmt.Printf("License operation failed: %v\n", err)
+			os.Exit(1)
+		}
 	case "-iml":
 		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--clear") {
 			if err := client.ClearLog("IML"); err != nil {
