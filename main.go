@@ -65,8 +65,22 @@ func canonicalTaskURI(taskURI string) string {
 }
 
 func isTerminalTaskState(state string) bool {
-	switch strings.ToLower(state) {
-	case "complete", "completed", "failed", "exception", "killed", "cancelled":
+	return isSuccessfulFirmwareState(state) || isFailedFirmwareState(state)
+}
+
+func isSuccessfulFirmwareState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "complete", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func isFailedFirmwareState(state string) bool {
+	// Include standard Redfish terminal failures and HPE UpdateService states.
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "error", "failed", "rejected", "exception", "killed", "cancelled", "canceled", "aborted":
 		return true
 	default:
 		return false
@@ -512,10 +526,10 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 		}
 		if oemData, oemErr := c.FetchOemHpeData(); oemErr == nil && (oemData.State != "" || oemData.FlashProgressPercent > 0) {
 			state := oemData.State
-			if strings.EqualFold(state, "Complete") || strings.EqualFold(state, "Completed") {
+			if isSuccessfulFirmwareState(state) {
 				return "Complete", 100, nil
 			}
-			if strings.EqualFold(state, "Failed") || strings.EqualFold(state, "Exception") || strings.EqualFold(state, "Killed") {
+			if isFailedFirmwareState(state) {
 				return "Error", oemData.FlashProgressPercent, nil
 			}
 			return state, oemData.FlashProgressPercent, nil
@@ -619,10 +633,10 @@ func (c *ILOClient) GetTaskStatus(taskURI string) (string, int, error) {
 	if taskData.PercentComplete > progress {
 		progress = taskData.PercentComplete
 	}
-	if strings.EqualFold(updateState, "Complete") || strings.EqualFold(updateState, "Completed") {
+	if isSuccessfulFirmwareState(updateState) {
 		return "Complete", 100, nil
 	}
-	if strings.EqualFold(updateState, "Failed") || strings.EqualFold(updateState, "Exception") || strings.EqualFold(updateState, "Killed") || strings.EqualFold(updateState, "Cancelled") {
+	if isFailedFirmwareState(updateState) {
 		return "Error", progress, nil
 	}
 	if updateState == "" || strings.EqualFold(updateState, "Unknown") {
@@ -931,8 +945,8 @@ func (c *ILOClient) MonitorUpdate(taskURI, matchText, targetKind string, timeout
 
 		fmt.Printf("\r進度: %d%%, 更新狀態: %s        ", progress, status)
 
-		switch status {
-		case "Complete":
+		switch {
+		case isSuccessfulFirmwareState(status):
 			fmt.Println("\n更新完成!")
 			if !strings.EqualFold(targetKind, "ilo") {
 				if fetchErr := c.FetchIMLEvents(10, filter, ""); fetchErr != nil {
@@ -940,7 +954,7 @@ func (c *ILOClient) MonitorUpdate(taskURI, matchText, targetKind string, timeout
 				}
 			}
 			return nil
-		case "Error":
+		case isFailedFirmwareState(status):
 			fmt.Println("\n更新失敗!")
 			if !strings.EqualFold(targetKind, "ilo") {
 				if fetchErr := c.FetchIMLEvents(10, filter, ""); fetchErr != nil {

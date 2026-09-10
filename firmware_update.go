@@ -717,11 +717,11 @@ func (c *ILOClient) MonitorUpdateService(ctx context.Context, timeout int) error
 		}
 		fmt.Printf("\r進度: %d%%, 更新狀態: %s        ", progress, state)
 		c.debugf("UpdateService progress state=%s percent=%d", state, progress)
-		if strings.EqualFold(state, "Complete") || strings.EqualFold(state, "Completed") {
+		if isSuccessfulFirmwareState(state) {
 			fmt.Println("\n更新完成!")
 			return nil
 		}
-		if strings.EqualFold(state, "Failed") || strings.EqualFold(state, "Rejected") || strings.EqualFold(state, "Exception") || strings.EqualFold(state, "Killed") || strings.EqualFold(state, "Cancelled") {
+		if isFailedFirmwareState(state) {
 			fmt.Println("\n更新失敗!")
 			return fmt.Errorf("firmware update failed with UpdateService state %s", state)
 		}
