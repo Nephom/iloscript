@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 func printHelp() {
-	fmt.Println("iloscript 1.2.17 - HPE iLO Redfish command line client")
+	fmt.Println("iloscript 1.2.18 - HPE iLO Redfish command line client")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  iloscript <ilo_ip> <command> [arguments]")
