@@ -1823,6 +1823,29 @@ func main() {
 			insecureImageTLS = true
 		}
 	}
+	if len(os.Args) >= 3 && os.Args[1] == "-D" && os.Args[2] == "-firmware" {
+		if len(os.Args) != 4 {
+			fmt.Println("Usage: ./iloscript -D -firmware <folder>")
+			return
+		}
+		files, scanErr := firmwareFilesInFolder(os.Args[3])
+		if scanErr != nil {
+			fmt.Printf("Firmware debug error: %v\n", scanErr)
+			return
+		}
+		selected, skipped, selectionErr := selectFirmwareOrder(files, os.Stdin, os.Stdout)
+		if selectionErr != nil {
+			fmt.Printf("Firmware debug selection: %v\n", selectionErr)
+			return
+		}
+		fmt.Println("\nDebug mode: no firmware was flashed.")
+		fmt.Println("Selected flash order:")
+		for index, path := range selected {
+			fmt.Printf("  %d. %s\n", index+1, path)
+		}
+		fmt.Printf("Skipped: %d\n", len(skipped))
+		return
+	}
 	if len(os.Args) == 2 && (os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help") {
 		printHelp()
 		return

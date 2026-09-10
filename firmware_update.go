@@ -14,10 +14,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type FirmwareCapabilities struct {
@@ -86,78 +87,288 @@ func parseFirmwareArguments(arguments []string) ([]string, string, error) {
 }
 
 func firmwareFilesInFolder(folder string) ([]string, error) {
-	entries, err := os.ReadDir(folder)
+	paths := make([]string, 0)
+	err := filepath.WalkDir(folder, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == folder {
+			return nil
+		}
+		// Do not follow symlinks. A firmware folder should not unexpectedly
+		// include files outside the folder supplied by the user.
+		if entry.Type()&os.ModeSymlink != 0 {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Type().IsRegular() {
+			paths = append(paths, path)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read firmware folder: %w", err)
 	}
-	paths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		paths = append(paths, filepath.Join(folder, entry.Name()))
-	}
 	sort.Strings(paths)
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("firmware folder %q is empty", folder)
+		return nil, fmt.Errorf("firmware folder %q has no regular files", folder)
 	}
 	return paths, nil
+}
+
+type firmwareTUIPhase int
+
+const (
+	firmwareSelectPhase firmwareTUIPhase = iota
+	firmwareOrderPhase
+	firmwareConfirmPhase
+)
+
+type firmwareTUIModel struct {
+	files     []string
+	selected  map[int]bool
+	order     []int
+	cursor    int
+	phase     firmwareTUIPhase
+	confirmed bool
+	cancelled bool
+}
+
+func newFirmwareTUIModel(files []string) firmwareTUIModel {
+	return firmwareTUIModel{files: files, selected: make(map[int]bool)}
+}
+
+func (m firmwareTUIModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m firmwareTUIModel) selectedIndices() []int {
+	indices := make([]int, 0)
+	for index := range m.files {
+		if m.selected[index] {
+			indices = append(indices, index)
+		}
+	}
+	return indices
+}
+
+func (m firmwareTUIModel) orderComplete() bool {
+	return len(m.order) == len(m.selectedIndices()) && len(m.order) > 0
+}
+
+func (m firmwareTUIModel) footerItems() int {
+	if m.phase == firmwareSelectPhase {
+		return len(m.files) + 2 // OK, Cancel
+	}
+	return len(m.selectedIndices()) + 2 // OK, Cancel
+}
+
+func (m firmwareTUIModel) moveCursor(delta int) firmwareTUIModel {
+	items := m.footerItems()
+	m.cursor = (m.cursor + delta + items) % items
+	return m
+}
+
+func (m firmwareTUIModel) selectedForOrder() []int {
+	return m.selectedIndices()
+}
+
+func (m firmwareTUIModel) toggleSelection() firmwareTUIModel {
+	if m.phase == firmwareSelectPhase {
+		if m.cursor < len(m.files) {
+			m.selected[m.cursor] = !m.selected[m.cursor]
+		}
+		return m
+	}
+	indices := m.selectedForOrder()
+	if m.cursor >= len(indices) {
+		return m
+	}
+	index := indices[m.cursor]
+	for position, orderedIndex := range m.order {
+		if orderedIndex == index {
+			m.order = append(m.order[:position], m.order[position+1:]...)
+			return m
+		}
+	}
+	m.order = append(m.order, index)
+	return m
+}
+
+func (m firmwareTUIModel) enter() (firmwareTUIModel, tea.Cmd) {
+	if m.phase == firmwareSelectPhase {
+		if m.cursor == len(m.files) {
+			if len(m.selectedIndices()) == 0 {
+				return m, nil
+			}
+			m.phase = firmwareOrderPhase
+			m.cursor = 0
+		}
+		if m.cursor == len(m.files)+1 {
+			m.cancelled = true
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+	if m.phase == firmwareOrderPhase {
+		if m.cursor == len(m.selectedIndices()) {
+			if !m.orderComplete() {
+				return m, nil
+			}
+			m.phase = firmwareConfirmPhase
+			m.cursor = 0
+		}
+		if m.cursor == len(m.selectedIndices())+1 {
+			m.cancelled = true
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+	if m.cursor == 0 {
+		m.confirmed = true
+		return m, tea.Quit
+	}
+	m.cancelled = true
+	return m, tea.Quit
+}
+
+func (m firmwareTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := message.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "ctrl+c", "esc":
+		m.cancelled = true
+		return m, tea.Quit
+	case "up", "k":
+		m = m.moveCursor(-1)
+	case "down", "j":
+		m = m.moveCursor(1)
+	case " ":
+		m = m.toggleSelection()
+	case "enter":
+		return m.enter()
+	case "q":
+		m.cancelled = true
+		return m, tea.Quit
+	case "y", "Y":
+		if m.phase == firmwareConfirmPhase {
+			m.confirmed = true
+			return m, tea.Quit
+		}
+	case "n", "N":
+		if m.phase == firmwareConfirmPhase {
+			m.cancelled = true
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func firmwareDisplayPath(path string) string {
+	return filepath.ToSlash(path)
+}
+
+func (m firmwareTUIModel) View() string {
+	var view strings.Builder
+	view.WriteString("Firmware update\n\n")
+	if m.phase == firmwareSelectPhase {
+		view.WriteString("Select firmware images\n\n")
+		for index, path := range m.files {
+			view.WriteString(firmwareTUIItem(m.cursor == index, m.selected[index], fmt.Sprintf("%d. %s", index+1, firmwareDisplayPath(path))))
+		}
+		view.WriteString("\nSelected images\n")
+		indices := m.selectedIndices()
+		if len(indices) == 0 {
+			view.WriteString("  (none)\n")
+		} else {
+			for _, index := range indices {
+				view.WriteString(fmt.Sprintf("  - %s\n", firmwareDisplayPath(m.files[index])))
+			}
+		}
+		view.WriteString("\n")
+		view.WriteString(firmwareTUIItem(m.cursor == len(m.files), false, "OK"))
+		view.WriteString(firmwareTUIItem(m.cursor == len(m.files)+1, false, "Cancel"))
+		view.WriteString("\nSpace select  Up/Down move  Enter OK  Esc cancel\n")
+		return view.String()
+	}
+	if m.phase == firmwareOrderPhase {
+		view.WriteString("Set flash order\n\n")
+		indices := m.selectedIndices()
+		for position, index := range indices {
+			ordered := 0
+			for orderPosition, orderedIndex := range m.order {
+				if orderedIndex == index {
+					ordered = orderPosition + 1
+				}
+			}
+			label := fmt.Sprintf("%d. %s", index+1, firmwareDisplayPath(m.files[index]))
+			if ordered > 0 {
+				label = fmt.Sprintf("%d. %s (order %d)", index+1, firmwareDisplayPath(m.files[index]), ordered)
+			}
+			view.WriteString(firmwareTUIItem(m.cursor == position, ordered > 0, label))
+		}
+		view.WriteString("\nFlash order\n")
+		if len(m.order) == 0 {
+			view.WriteString("  (none)\n")
+		} else {
+			for position, index := range m.order {
+				view.WriteString(fmt.Sprintf("  %d. %s\n", position+1, firmwareDisplayPath(m.files[index])))
+			}
+		}
+		view.WriteString("\n")
+		view.WriteString(firmwareTUIItem(m.cursor == len(indices), m.orderComplete(), "OK"))
+		view.WriteString(firmwareTUIItem(m.cursor == len(indices)+1, false, "Cancel"))
+		view.WriteString("\nSpace add/remove order  Up/Down move  Enter OK  Esc cancel\n")
+		return view.String()
+	}
+	view.WriteString("Ready to flash\n\n")
+	for position, index := range m.order {
+		view.WriteString(fmt.Sprintf("  %d. %s\n", position+1, firmwareDisplayPath(m.files[index])))
+	}
+	view.WriteString("\nFlash these images? [y/N]\n")
+	view.WriteString("Enter or y: flash  Esc or n: cancel\n")
+	return view.String()
+}
+
+func firmwareTUIItem(cursor, marked bool, label string) string {
+	prefix := "  "
+	if cursor {
+		prefix = "> "
+	}
+	mark := "[ ] "
+	if marked {
+		mark = "[x] "
+	}
+	return prefix + mark + label + "\n"
 }
 
 func selectFirmwareOrder(files []string, input io.Reader, output io.Writer) ([]string, []string, error) {
 	if len(files) == 0 {
 		return nil, nil, fmt.Errorf("no firmware files found")
 	}
-	remaining := make(map[int]bool, len(files))
-	for index := range files {
-		remaining[index] = true
+	program := tea.NewProgram(newFirmwareTUIModel(files), tea.WithInput(input), tea.WithOutput(output))
+	finalModel, err := program.Run()
+	if err != nil {
+		return nil, nil, fmt.Errorf("run firmware selection: %w", err)
 	}
-	var selected []string
-	var skipped []string
-	reader := bufio.NewScanner(input)
-	for len(remaining) > 0 {
-		fmt.Fprintln(output, "\nRemaining firmware files:")
-		indices := make([]int, 0, len(remaining))
-		for index := range remaining {
-			indices = append(indices, index)
-		}
-		sort.Ints(indices)
-		for _, index := range indices {
-			fmt.Fprintf(output, "  [%d] %s\n", index+1, files[index])
-		}
-		fmt.Fprintln(output, "Enter a number to select, x <number> to skip, or q to cancel:")
-		if !reader.Scan() {
-			return nil, nil, fmt.Errorf("read firmware selection: %w", reader.Err())
-		}
-		answer := strings.Fields(strings.TrimSpace(reader.Text()))
-		if len(answer) == 0 {
-			fmt.Fprintln(output, "Please select or skip every firmware file before continuing.")
-			continue
-		}
-		if strings.EqualFold(answer[0], "q") {
-			return nil, nil, fmt.Errorf("firmware selection cancelled")
-		}
-		skip := strings.EqualFold(answer[0], "x")
-		if skip {
-			if len(answer) != 2 {
-				fmt.Fprintln(output, "Use x <number> to skip a firmware file.")
-				continue
-			}
-			answer = answer[1:]
-		} else if len(answer) != 1 {
-			fmt.Fprintln(output, "Enter one file number at a time.")
-			continue
-		}
-		index, err := strconv.Atoi(answer[0])
-		if err != nil || index < 1 || index > len(files) || !remaining[index-1] {
-			fmt.Fprintln(output, "That file number is not available.")
-			continue
-		}
-		delete(remaining, index-1)
-		if skip {
-			skipped = append(skipped, files[index-1])
-		} else {
-			selected = append(selected, files[index-1])
+	model, ok := finalModel.(firmwareTUIModel)
+	if !ok || model.cancelled || !model.confirmed {
+		return nil, nil, fmt.Errorf("firmware selection cancelled")
+	}
+	selected := make([]string, 0, len(model.order))
+	for _, index := range model.order {
+		selected = append(selected, files[index])
+	}
+	skipped := make([]string, 0, len(files)-len(selected))
+	for index, path := range files {
+		if !model.selected[index] {
+			skipped = append(skipped, path)
 		}
 	}
-	fmt.Fprintln(output, "\nFirmware selection complete.")
 	return selected, skipped, nil
 }
 
