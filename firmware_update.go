@@ -131,13 +131,15 @@ type firmwareTUIModel struct {
 	selected  map[int]bool
 	order     []int
 	cursor    int
+	height    int
+	scrollTop int
 	phase     firmwareTUIPhase
 	confirmed bool
 	cancelled bool
 }
 
 func newFirmwareTUIModel(files []string) firmwareTUIModel {
-	return firmwareTUIModel{files: files, selected: make(map[int]bool)}
+	return firmwareTUIModel{files: files, selected: make(map[int]bool), height: 24}
 }
 
 func (m firmwareTUIModel) Init() tea.Cmd {
@@ -159,15 +161,70 @@ func (m firmwareTUIModel) orderComplete() bool {
 }
 
 func (m firmwareTUIModel) footerItems() int {
+	if m.phase == firmwareConfirmPhase {
+		return 2
+	}
 	if m.phase == firmwareSelectPhase {
 		return len(m.files) + 2 // OK, Cancel
 	}
 	return len(m.selectedIndices()) + 2 // OK, Cancel
 }
 
+func (m firmwareTUIModel) listItems() int {
+	switch m.phase {
+	case firmwareSelectPhase:
+		return len(m.files)
+	case firmwareOrderPhase:
+		return len(m.selectedIndices())
+	default:
+		return 0
+	}
+}
+
+func (m firmwareTUIModel) fixedViewLines() int {
+	// Header, one status line, two footer items, a spacer, and the key help line.
+	return 9
+}
+
+func (m firmwareTUIModel) visibleItemCount() int {
+	available := m.height - m.fixedViewLines()
+	if available < 1 {
+		return 1
+	}
+	return available
+}
+
+func (m *firmwareTUIModel) keepCursorVisible() {
+	itemCount := m.listItems()
+	if itemCount == 0 {
+		m.scrollTop = 0
+		return
+	}
+	visible := m.visibleItemCount()
+	if m.cursor < itemCount {
+		if m.cursor < m.scrollTop {
+			m.scrollTop = m.cursor
+		}
+		if m.cursor >= m.scrollTop+visible {
+			m.scrollTop = m.cursor - visible + 1
+		}
+	}
+	maxScroll := itemCount - visible
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.scrollTop > maxScroll {
+		m.scrollTop = maxScroll
+	}
+	if m.scrollTop < 0 {
+		m.scrollTop = 0
+	}
+}
+
 func (m firmwareTUIModel) moveCursor(delta int) firmwareTUIModel {
 	items := m.footerItems()
 	m.cursor = (m.cursor + delta + items) % items
+	m.keepCursorVisible()
 	return m
 }
 
@@ -205,6 +262,7 @@ func (m firmwareTUIModel) enter() (firmwareTUIModel, tea.Cmd) {
 			}
 			m.phase = firmwareOrderPhase
 			m.cursor = 0
+			m.scrollTop = 0
 		}
 		if m.cursor == len(m.files)+1 {
 			m.cancelled = true
@@ -235,6 +293,11 @@ func (m firmwareTUIModel) enter() (firmwareTUIModel, tea.Cmd) {
 }
 
 func (m firmwareTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	if size, ok := message.(tea.WindowSizeMsg); ok {
+		m.height = size.Height
+		m.keepCursorVisible()
+		return m, nil
+	}
 	key, ok := message.(tea.KeyMsg)
 	if !ok {
 		return m, nil
@@ -277,19 +340,12 @@ func (m firmwareTUIModel) View() string {
 	view.WriteString("Firmware update\n\n")
 	if m.phase == firmwareSelectPhase {
 		view.WriteString("Select firmware images\n\n")
-		for index, path := range m.files {
+		start, end := m.visibleRange(len(m.files))
+		for index := start; index < end; index++ {
+			path := m.files[index]
 			view.WriteString(firmwareTUIItem(m.cursor == index, m.selected[index], fmt.Sprintf("%d. %s", index+1, firmwareDisplayPath(path))))
 		}
-		view.WriteString("\nSelected images\n")
-		indices := m.selectedIndices()
-		if len(indices) == 0 {
-			view.WriteString("  (none)\n")
-		} else {
-			for _, index := range indices {
-				view.WriteString(fmt.Sprintf("  - %s\n", firmwareDisplayPath(m.files[index])))
-			}
-		}
-		view.WriteString("\n")
+		view.WriteString(fmt.Sprintf("Selected images: %d/%d (showing %d-%d)\n", len(m.selectedIndices()), len(m.files), rangeStartForDisplay(start, end), rangeEndForDisplay(start, end)))
 		view.WriteString(firmwareTUIItem(m.cursor == len(m.files), false, "OK"))
 		view.WriteString(firmwareTUIItem(m.cursor == len(m.files)+1, false, "Cancel"))
 		view.WriteString("\nSpace select  Up/Down move  Enter OK  Esc cancel\n")
@@ -298,7 +354,9 @@ func (m firmwareTUIModel) View() string {
 	if m.phase == firmwareOrderPhase {
 		view.WriteString("Set flash order\n\n")
 		indices := m.selectedIndices()
-		for position, index := range indices {
+		start, end := m.visibleRange(len(indices))
+		for position := start; position < end; position++ {
+			index := indices[position]
 			ordered := 0
 			for orderPosition, orderedIndex := range m.order {
 				if orderedIndex == index {
@@ -311,27 +369,39 @@ func (m firmwareTUIModel) View() string {
 			}
 			view.WriteString(firmwareTUIItem(m.cursor == position, ordered > 0, label))
 		}
-		view.WriteString("\nFlash order\n")
-		if len(m.order) == 0 {
-			view.WriteString("  (none)\n")
-		} else {
-			for position, index := range m.order {
-				view.WriteString(fmt.Sprintf("  %d. %s\n", position+1, firmwareDisplayPath(m.files[index])))
-			}
-		}
-		view.WriteString("\n")
+		view.WriteString(fmt.Sprintf("Flash order: %d/%d complete (showing %d-%d)\n", len(m.order), len(indices), rangeStartForDisplay(start, end), rangeEndForDisplay(start, end)))
 		view.WriteString(firmwareTUIItem(m.cursor == len(indices), m.orderComplete(), "OK"))
 		view.WriteString(firmwareTUIItem(m.cursor == len(indices)+1, false, "Cancel"))
 		view.WriteString("\nSpace add/remove order  Up/Down move  Enter OK  Esc cancel\n")
 		return view.String()
 	}
 	view.WriteString("Ready to flash\n\n")
-	for position, index := range m.order {
-		view.WriteString(fmt.Sprintf("  %d. %s\n", position+1, firmwareDisplayPath(m.files[index])))
-	}
-	view.WriteString("\nFlash these images? [y/N]\n")
+	view.WriteString(fmt.Sprintf("Flash these images? %d image(s) [y/N]\n\n", len(m.order)))
 	view.WriteString("Enter or y: flash  Esc or n: cancel\n")
 	return view.String()
+}
+
+func (m firmwareTUIModel) visibleRange(itemCount int) (int, int) {
+	start := m.scrollTop
+	if start > itemCount {
+		start = itemCount
+	}
+	end := start + m.visibleItemCount()
+	if end > itemCount {
+		end = itemCount
+	}
+	return start, end
+}
+
+func rangeStartForDisplay(start, end int) int {
+	if end == 0 {
+		return 0
+	}
+	return start + 1
+}
+
+func rangeEndForDisplay(start, end int) int {
+	return end
 }
 
 func firmwareTUIItem(cursor, marked bool, label string) string {
