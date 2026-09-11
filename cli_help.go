@@ -2,11 +2,34 @@ package main
 
 import "fmt"
 
+// parseGlobalArguments removes options that apply to the whole program before
+// command-specific argument parsing begins. Global options are optional and
+// are accepted in any position so they cannot be mistaken for subcommand
+// arguments such as the IML count or a license option.
+func parseGlobalArguments(arguments []string) ([]string, bool, bool) {
+	cleanArguments := make([]string, 0, len(arguments))
+	verbose := false
+	insecureImageTLS := false
+
+	for _, argument := range arguments {
+		switch argument {
+		case "-v", "--verbose":
+			verbose = true
+		case "--i":
+			insecureImageTLS = true
+		default:
+			cleanArguments = append(cleanArguments, argument)
+		}
+	}
+
+	return cleanArguments, verbose, insecureImageTLS
+}
+
 func printHelp() {
-	fmt.Println("iloscript 1.2.21 - HPE iLO Redfish command line client")
+	fmt.Println("iloscript 1.2.22 - HPE iLO Redfish command line client")
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  iloscript <ilo_ip> <command> [arguments]")
+	fmt.Println("  iloscript [-v|--verbose] <ilo_ip> <command> [arguments]")
 	fmt.Println()
 	fmt.Println("Authentication:")
 	fmt.Println("  ILO_USERNAME and ILO_PASSWORD must be set, either as environment")

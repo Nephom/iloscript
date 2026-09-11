@@ -1838,16 +1838,11 @@ func (c *ILOClient) FetchSensorData() error {
 }
 
 func main() {
-	verbose := false
-	insecureImageTLS := false
-	for _, argument := range os.Args[1:] {
-		if argument == "-v" || argument == "--verbose" {
-			verbose = true
-		}
-		if argument == "--i" {
-			insecureImageTLS = true
-		}
-	}
+	cleanArguments, verbose, insecureImageTLS := parseGlobalArguments(os.Args[1:])
+	// Keep the existing command handlers indexed from os.Args[1], while
+	// ensuring global options never reach subcommand-specific parsers.
+	os.Args = append([]string{os.Args[0]}, cleanArguments...)
+
 	if len(os.Args) >= 3 && os.Args[1] == "-D" && os.Args[2] == "-firmware" {
 		if len(os.Args) != 4 {
 			fmt.Println("Usage: ./iloscript -D -firmware <folder>")
