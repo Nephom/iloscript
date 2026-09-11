@@ -23,10 +23,17 @@ type iloLicense struct {
 	LicenseKey         string `json:"LicenseKey"`
 	LicenseTier        string `json:"LicenseTier"`
 	LicenseInstallDate string `json:"LicenseInstallDate"`
+	LicenseExpire      string `json:"LicenseExpire"`
+	LicenseType        string `json:"LicenseType"`
+	License            string `json:"License"`
+}
+
+type iloLicenseMemberRef struct {
+	ODataID string `json:"@odata.id"`
 }
 
 type iloLicenseCollection struct {
-	Members []iloLicense `json:"Members"`
+	Members []iloLicenseMemberRef `json:"Members"`
 }
 
 func parseLicenseArguments(arguments []string) (licenseCommandOptions, error) {
@@ -67,17 +74,37 @@ func (c *ILOClient) readLicense(ctx context.Context) error {
 	}
 
 	printed := false
-	for _, license := range collection.Members {
+	for _, member := range collection.Members {
+		if member.ODataID == "" {
+			continue
+		}
+		memberBody, _, err := c.getJSON(ctx, c.resolveURI(member.ODataID))
+		if err != nil {
+			return fmt.Errorf("read license %s failed: %w", member.ODataID, err)
+		}
+		var license iloLicense
+		if err := json.Unmarshal(memberBody, &license); err != nil {
+			return fmt.Errorf("parse license response: %w", err)
+		}
 		if license.LicenseKey == "" {
 			continue
 		}
 		printed = true
 		fmt.Printf("License: %s\n", license.LicenseKey)
+		if license.License != "" {
+			fmt.Printf("Name: %s\n", license.License)
+		}
 		if license.LicenseTier != "" {
 			fmt.Printf("Tier: %s\n", license.LicenseTier)
 		}
+		if license.LicenseType != "" {
+			fmt.Printf("Type: %s\n", license.LicenseType)
+		}
 		if license.LicenseInstallDate != "" {
 			fmt.Printf("Installation date: %s\n", license.LicenseInstallDate)
+		}
+		if license.LicenseExpire != "" {
+			fmt.Printf("Expiration: %s\n", license.LicenseExpire)
 		}
 	}
 	if !printed {
