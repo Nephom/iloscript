@@ -27,7 +27,7 @@ var devicesOutputLabels = []string{
 	"Processor/CPU",
 	"DIMM (NVDIMM)",
 	"Options",
-	"BP",
+	"Backplane",
 	"Drives",
 	"TPM",
 	"PSU",
@@ -355,7 +355,7 @@ func (c *ILOClient) collectDevicesOutput() (*devicesOutput, error) {
 	values["Processor/CPU"] = joinValues(countValues(processors))
 	values["DIMM (NVDIMM)"] = joinValues(countValues(memory))
 	values["Options"] = na
-	values["BP"] = na
+	values["Backplane"] = na
 	values["Drives"] = joinValues(countValues(drives))
 	values["TPM"] = na
 	values["PSU"] = joinValues(countValues(psus))
@@ -383,7 +383,7 @@ func (c *ILOClient) collectDevicesOutput() (*devicesOutput, error) {
 		if label == "Power PIC" && len(secondaryVersions) > 0 {
 			out.Body = append(out.Body, []string{"", "SecondaryCPLD", joinValues(countValues(secondaryVersions))})
 		}
-		if label == "BP" {
+		if label == "Backplane" {
 			rows := compactBackplaneRows(chassis)
 			if len(rows) > 0 {
 				out.Body = append(out.Body, rows...)
