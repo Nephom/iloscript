@@ -26,7 +26,7 @@ func parseGlobalArguments(arguments []string) ([]string, bool, bool) {
 }
 
 func printHelp() {
-	fmt.Println("iloscript 1.2.23 - HPE iLO Redfish command line client")
+	fmt.Println("iloscript 1.2.24 - HPE iLO Redfish command line client")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  iloscript [-v|--verbose] <ilo_ip> <command> [arguments]")

@@ -19,6 +19,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 )
 
 type FirmwareCapabilities struct {
@@ -310,6 +312,14 @@ func (m firmwareTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.moveCursor(-1)
 	case "down", "j":
 		m = m.moveCursor(1)
+	case "r", "R":
+		if m.phase == firmwareSelectPhase {
+			m.cursor = len(m.files)
+			m.keepCursorVisible()
+		} else if m.phase == firmwareOrderPhase {
+			m.cursor = len(m.selectedIndices())
+			m.keepCursorVisible()
+		}
 	case " ":
 		m = m.toggleSelection()
 	case "enter":
@@ -413,7 +423,15 @@ func firmwareTUIItem(cursor, marked bool, label string) string {
 	if marked {
 		mark = "[x] "
 	}
-	return prefix + mark + label + "\n"
+	line := prefix + mark + label
+	if cursor {
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#073B3A")).
+			Background(lipgloss.Color("#9DE8E5")).
+			Bold(true).
+			Render(line) + "\n"
+	}
+	return line + "\n"
 }
 
 func selectFirmwareOrder(files []string, input io.Reader, output io.Writer) ([]string, []string, error) {
@@ -443,9 +461,11 @@ func selectFirmwareOrder(files []string, input io.Reader, output io.Writer) ([]s
 }
 
 type firmwareFlashResult struct {
-	Path    string
-	Status  string
-	Message string
+	Path       string
+	Status     string
+	Message    string
+	IMLStatus  string
+	IMLMessage string
 }
 
 func parseIMLTime(value string) (time.Time, error) {
@@ -503,7 +523,7 @@ func (c *ILOClient) flashFirmwareBatch(ctx context.Context, files []string, targ
 		fmt.Printf("\n=== Flashing %s ===\n", path)
 		baselineID, baselineErr := c.latestIMLID(ctx)
 		if baselineErr != nil {
-			results = append(results, firmwareFlashResult{Path: path, Status: "FAIL", Message: baselineErr.Error()})
+			results = append(results, firmwareFlashResult{Path: path, Status: "FAIL", Message: baselineErr.Error(), IMLStatus: "WARNING", IMLMessage: baselineErr.Error()})
 			return results, fmt.Errorf("read IML baseline before %s: %w", path, baselineErr)
 		}
 		started := time.Now()
@@ -539,9 +559,11 @@ func (c *ILOClient) flashFirmwareBatch(ctx context.Context, files []string, targ
 		if event, imlErr := c.verifyFirmwareFlashIML(ctx, baselineID, started); imlErr != nil {
 			result.Status = "WARNING"
 			result.Message = imlErr.Error()
-			fmt.Printf("WARNING: %s\n", result.Message)
+			result.IMLStatus = "WARNING"
+			result.IMLMessage = imlErr.Error()
 		} else {
-			fmt.Printf("IML flash event verified: %s\n", event.Message)
+			result.IMLStatus = firmwareIMLStatus(event.Message)
+			result.IMLMessage = event.Message
 		}
 		results = append(results, result)
 	}
@@ -551,9 +573,7 @@ func (c *ILOClient) flashFirmwareBatch(ctx context.Context, files []string, targ
 func printFirmwareSummary(results []firmwareFlashResult) {
 	fmt.Println("\nFirmware Flash Summary")
 	fmt.Println("======================")
-	for _, result := range results {
-		fmt.Printf("%-8s %s: %s\n", result.Status, result.Path, result.Message)
-	}
+	printFirmwareResultTable(results)
 	pass, warning, failed, skipped := 0, 0, 0, 0
 	for _, result := range results {
 		switch result.Status {
@@ -568,6 +588,90 @@ func printFirmwareSummary(results []firmwareFlashResult) {
 		}
 	}
 	fmt.Printf("\nResult: %d passed, %d warning, %d failed, %d skipped\n", pass, warning, failed, skipped)
+}
+
+func firmwareIMLStatus(message string) string {
+	lowerMessage := strings.ToLower(message)
+	for _, keyword := range []string{"fail", "reject", "error", "aborted", "cancelled", "canceled"} {
+		if strings.Contains(lowerMessage, keyword) {
+			return "FAIL"
+		}
+	}
+	return "PASS"
+}
+
+func firmwareTerminalWidth() int {
+	if width, _, err := term.GetSize(os.Stdout.Fd()); err == nil && width > 0 {
+		return width
+	}
+	return 120
+}
+
+func firmwareTruncate(value string, width int) string {
+	value = strings.TrimSpace(value)
+	if width <= 0 {
+		return ""
+	}
+	if len([]rune(value)) <= width {
+		return value
+	}
+	if width <= 3 {
+		return string([]rune(value)[:width])
+	}
+	return string([]rune(value)[:width-3]) + "..."
+}
+
+func firmwareTableCell(value string, width int) string {
+	value = firmwareTruncate(value, width)
+	return value + strings.Repeat(" ", width-len([]rune(value)))
+}
+
+func firmwareStatusColor(status string) string {
+	switch status {
+	case "PASS":
+		return "\033[32m"
+	case "FAIL":
+		return "\033[31m"
+	default:
+		return "\033[33m"
+	}
+}
+
+func printFirmwareResultTable(results []firmwareFlashResult) {
+	if len(results) == 0 {
+		return
+	}
+	width := firmwareTerminalWidth()
+	pathWidth := 28
+	resultWidth := 8
+	borderPadding := 10
+	messageWidth := width - pathWidth - resultWidth - borderPadding
+	if messageWidth < 24 {
+		pathWidth = 20
+		messageWidth = width - pathWidth - resultWidth - borderPadding
+	}
+	if messageWidth < 12 {
+		messageWidth = 12
+	}
+	separator := "+" + strings.Repeat("-", pathWidth+2) + "+" + strings.Repeat("-", resultWidth+2) + "+" + strings.Repeat("-", messageWidth+2) + "+"
+	fmt.Println(separator)
+	fmt.Printf("| %s | %s | %s |\n", firmwareTableCell("Firmware", pathWidth), firmwareTableCell("Result", resultWidth), firmwareTableCell("IML", messageWidth))
+	fmt.Println(separator)
+	reset := "\033[0m"
+	for _, result := range results {
+		imlStatus := result.IMLStatus
+		if imlStatus == "" {
+			imlStatus = "-"
+		}
+		imlText := result.IMLMessage
+		if imlText == "" {
+			imlText = result.Message
+		}
+		imlCell := firmwareTableCell(imlStatus+": "+imlText, messageWidth)
+		coloredIML := firmwareStatusColor(imlStatus) + imlCell + reset
+		fmt.Printf("| %s | %s | %s |\n", firmwareTableCell(filepath.Base(result.Path), pathWidth), firmwareTableCell(result.Status, resultWidth), coloredIML)
+	}
+	fmt.Println(separator)
 }
 
 func (c *ILOClient) resolveURI(resourceURI string) string {
