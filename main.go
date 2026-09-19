@@ -1843,9 +1843,9 @@ func main() {
 	// ensuring global options never reach subcommand-specific parsers.
 	os.Args = append([]string{os.Args[0]}, cleanArguments...)
 
-	if len(os.Args) >= 3 && os.Args[1] == "-D" && os.Args[2] == "-firmware" {
+	if len(os.Args) >= 3 && os.Args[1] == "-D" && (os.Args[2] == "-firmware" || os.Args[2] == "-f") {
 		if len(os.Args) != 4 {
-			fmt.Println("Usage: ./iloscript -D -firmware <folder>")
+			fmt.Println("Usage: ./iloscript -D [-f|-firmware] <folder>")
 			return
 		}
 		files, scanErr := firmwareFilesInFolder(os.Args[3])
@@ -1922,12 +1922,12 @@ func main() {
 	}()
 
 	switch os.Args[2] {
-	case "-license":
+	case "-l", "-license":
 		if err := client.runLicenseCommand(os.Args[3:]); err != nil {
 			fmt.Printf("License operation failed: %v\n", err)
 			os.Exit(1)
 		}
-	case "-iml":
+	case "-m", "-iml":
 		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--clear") {
 			if err := client.ClearLog("IML"); err != nil {
 				fmt.Printf("IML clear failed: %v\n", err)
@@ -2038,9 +2038,9 @@ func main() {
 		}
 
 	// 在 switch 語句中添加新的 case
-	case "-power":
+	case "-p", "-power":
 		if len(os.Args) < 4 {
-			fmt.Println("Usage: <ilo_ip> -power [on|off|reset|status|monitor]")
+			fmt.Println("Usage: <ilo_ip> [-p|-power] [on|off|reset|status|monitor]")
 			os.Exit(1)
 		}
 		powerAction := os.Args[3]
@@ -2065,9 +2065,9 @@ func main() {
 				os.Exit(1)
 			}
 		}
-	case "-firmware":
+	case "-f", "-firmware":
 		if len(os.Args) < 4 {
-			fmt.Println("Usage: <ilo_ip> -firmware <image_path>... [--target auto|bios|ilo|manual]")
+			fmt.Println("Usage: <ilo_ip> [-f|-firmware] <image_path>... [--target auto|bios|ilo|manual]")
 			os.Exit(1)
 		}
 		sources, targetKind, argumentErr := parseFirmwareArguments(os.Args[3:])
@@ -2114,12 +2114,12 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "-devices":
+	case "-d", "-devices":
 		writeJSON := false
-		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--output") {
+		if len(os.Args) == 4 && (strings.EqualFold(os.Args[3], "--o") || strings.EqualFold(os.Args[3], "--output")) {
 			writeJSON = true
 		} else if len(os.Args) != 3 {
-			fmt.Println("Usage: <ilo_ip> -devices [--output]")
+			fmt.Println("Usage: <ilo_ip> [-d|-devices] [--o|--output]")
 			os.Exit(1)
 		}
 		if writeJSON {
@@ -2132,7 +2132,7 @@ func main() {
 			fmt.Printf("Devices get failed: %v\n", err)
 			os.Exit(1)
 		}
-	case "-storage":
+	case "-s", "-storage":
 		sortByBay := false
 		ledMode := false
 		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--bay") {
@@ -2143,7 +2143,7 @@ func main() {
 			sortByBay = true
 			ledMode = true
 		} else if len(os.Args) != 3 {
-			fmt.Println("Usage: <ilo_ip> -storage [--bay] [--led]")
+			fmt.Println("Usage: <ilo_ip> [-s|-storage] [--bay] [--led]")
 			os.Exit(1)
 		}
 		ctx, cancel := monitorContext()
@@ -2158,12 +2158,12 @@ func main() {
 			fmt.Printf("Storage operation failed: %v\n", storageErr)
 			os.Exit(1)
 		}
-	case "-sensors":
+	case "-n", "-sensors":
 		if err := client.FetchSensorData(); err != nil {
 			fmt.Printf("Sensor get failed: %v\n", err)
 			os.Exit(1)
 		}
-	case "-iel":
+	case "-e", "-iel":
 		if len(os.Args) == 4 && strings.EqualFold(os.Args[3], "--clear") {
 			if err := client.ClearLog("IEL"); err != nil {
 				fmt.Printf("IEL clear failed: %v\n", err)
@@ -2175,10 +2175,10 @@ func main() {
 			fmt.Printf("EventLog get failed: %v\n", err)
 			os.Exit(1)
 		}
-	case "-ahs":
+	case "-a", "-ahs":
 		outputFile := ""
 		for i := 3; i < len(os.Args); i++ {
-			if os.Args[i] == "-o" || os.Args[i] == "--output" {
+			if os.Args[i] == "--o" || os.Args[i] == "--output" {
 				if i+1 < len(os.Args) {
 					outputFile = os.Args[i+1]
 				}
@@ -2190,16 +2190,16 @@ func main() {
 			fmt.Printf("AHS download failed: %v\n", err)
 			os.Exit(1)
 		}
-	case "-reset":
+	case "-r", "-reset":
 		if err := client.ClearLogsAndReset(); err != nil {
 			fmt.Println("Error: ", err)
 		} else {
 			fmt.Println("Operation completed successfully.")
 		}
 
-	case "-bios":
+	case "-b", "-bios":
 		if len(os.Args) < 4 {
-			fmt.Println("Usage: <ilo_ip> -bios [get|setup|patch] [attrName] [attrValue]")
+			fmt.Println("Usage: <ilo_ip> [-b|-bios] [get|setup|reset|patch] [attrName] [attrValue]")
 			os.Exit(1)
 		}
 
@@ -2219,7 +2219,7 @@ func main() {
 
 		case "patch":
 			if len(os.Args) < 6 {
-				fmt.Println("Usage: <ilo_ip> -bios patch <attrName> <attrValue>")
+				fmt.Println("Usage: <ilo_ip> [-b|-bios] patch <attrName> <attrValue>")
 				os.Exit(1)
 			}
 
@@ -2246,7 +2246,7 @@ func main() {
 			}
 
 		default:
-			fmt.Println("Usage: <ilo_ip> -bios [get|setup|reset|patch] [attrName] [attrValue]")
+			fmt.Println("Usage: <ilo_ip> [-b|-bios] [get|setup|reset|patch] [attrName] [attrValue]")
 			os.Exit(1)
 		}
 
